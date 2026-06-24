@@ -1,0 +1,9 @@
+.DS_Store
+reference/labelme/
+DerivedData/
+build/
+*.xcuserstate
+ios/LabelmeIpad/LabelmeIpad.xcodeproj/xcuserdata/
+ios/LabelmeIpad/LabelmeIpad.xcodeproj/project.xcworkspace/xcuserdata/
+__pycache__/
+*.pyc
