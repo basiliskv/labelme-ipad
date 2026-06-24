@@ -343,6 +343,32 @@ final class DatasetStore: ObservableObject {
         markDirty()
     }
 
+    func reorderShape(draggedID: UUID, before targetID: UUID?) {
+        guard var shapes = annotation?.shapes,
+              let sourceIndex = shapes.firstIndex(where: { $0.id == draggedID })
+        else { return }
+        if targetID == draggedID {
+            return
+        }
+
+        let original = shapes
+        let moved = shapes.remove(at: sourceIndex)
+        let destinationIndex: Int
+        if let targetID, let targetIndex = shapes.firstIndex(where: { $0.id == targetID }) {
+            destinationIndex = targetIndex
+        } else {
+            destinationIndex = shapes.endIndex
+        }
+
+        shapes.insert(moved, at: destinationIndex)
+        guard shapes != original else { return }
+        annotation?.shapes = shapes
+        selectedShapeID = moved.id
+        selectedShapeIDs = [moved.id]
+        currentLabel = moved.label
+        markDirty()
+    }
+
     func copySelectedShape() {
         let shapes = selectedShapes
         guard !shapes.isEmpty else { return }

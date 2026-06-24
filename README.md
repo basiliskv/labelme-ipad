@@ -47,6 +47,7 @@ Labelme のデスクトップ UI に寄せて、左から `File List`、中央 `
 - `Point`: タップで作成
 - `LineStrip`: タップで点追加、`Finish` で確定
 - Shape List の長押し: Edit、Shape Type、Duplicate、Copy/Paste、Hide/Show、Delete、Select All など
+- Shape List の右端ハンドルをドラッグ: 元labelmeと同じようにshape/polygonの描画順・保存順を並び替え
 - Undo/Redo: toolbar の戻る/進むボタン、または外部キーボードの `Ctrl+Z` / `Ctrl+Y`（`Keys` で変更可）
 - 複数選択: 外部キーボードのShiftを押しながらCanvas上のpolygon/shapeをタップ（修飾キーは `Keys` で変更可）
 - Polygon 結合: 同じラベルのpolygonを2つ選択した状態で `Connect Polygon`

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var store = DatasetStore()
@@ -618,6 +619,8 @@ private struct ImageRow: View {
 
 private struct InspectorPanel: View {
     @ObservedObject var store: DatasetStore
+    @State private var draggedShapeID: UUID?
+    @State private var shapeDropTarget: ShapeDropTarget?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -716,13 +719,32 @@ private struct InspectorPanel: View {
             if let shapes = store.annotation?.shapes, !shapes.isEmpty {
                 VStack(spacing: 4) {
                     ForEach(shapes) { shape in
-                        ShapeRow(shape: shape, isSelected: store.selectedShapeIDs.contains(shape.id)) {
+                        ShapeRow(
+                            shape: shape,
+                            isSelected: store.selectedShapeIDs.contains(shape.id),
+                            isDropTarget: shapeDropTarget == .before(shape.id) && draggedShapeID != shape.id,
+                            dragProvider: { dragProvider(for: shape) }
+                        ) {
                             store.selectShape(shape)
+                        }
+                        .onDrop(
+                            of: [UTType.text],
+                            isTargeted: dropTargetBinding(.before(shape.id))
+                        ) { _ in
+                            reorderDraggedShape(to: .before(shape.id))
                         }
                         .contextMenu {
                             ShapeContextMenu(store: store, shape: shape)
                         }
                     }
+
+                    ShapeDropLine(isActive: shapeDropTarget == .end)
+                        .onDrop(
+                            of: [UTType.text],
+                            isTargeted: dropTargetBinding(.end)
+                        ) { _ in
+                            reorderDraggedShape(to: .end)
+                        }
                 }
             } else {
                 Text("No shapes")
@@ -771,11 +793,54 @@ private struct InspectorPanel: View {
             set: { store.updateSelectedShapeType($0) }
         )
     }
+
+    private func dragProvider(for shape: LabelmeShape) -> NSItemProvider {
+        draggedShapeID = shape.id
+        shapeDropTarget = nil
+        store.selectShape(shape)
+        return NSItemProvider(object: shape.id.uuidString as NSString)
+    }
+
+    private func dropTargetBinding(_ target: ShapeDropTarget) -> Binding<Bool> {
+        Binding(
+            get: { shapeDropTarget == target },
+            set: { isTargeted in
+                if isTargeted, draggedShapeID != nil {
+                    shapeDropTarget = target
+                } else if shapeDropTarget == target {
+                    shapeDropTarget = nil
+                }
+            }
+        )
+    }
+
+    private func reorderDraggedShape(to target: ShapeDropTarget) -> Bool {
+        guard let draggedShapeID else {
+            shapeDropTarget = nil
+            return false
+        }
+        switch target {
+        case .before(let targetID):
+            store.reorderShape(draggedID: draggedShapeID, before: targetID)
+        case .end:
+            store.reorderShape(draggedID: draggedShapeID, before: nil)
+        }
+        self.draggedShapeID = nil
+        shapeDropTarget = nil
+        return true
+    }
+}
+
+private enum ShapeDropTarget: Equatable {
+    case before(UUID)
+    case end
 }
 
 private struct ShapeRow: View {
     let shape: LabelmeShape
     let isSelected: Bool
+    let isDropTarget: Bool
+    let dragProvider: () -> NSItemProvider
     let action: () -> Void
 
     var body: some View {
@@ -798,12 +863,38 @@ private struct ShapeRow: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+
+                LabelmeIconView(icon: .lineStrip, size: 13)
+                    .opacity(0.45)
+                    .frame(width: 22, height: 28)
+                    .contentShape(Rectangle())
+                    .onDrag(dragProvider)
             }
             .padding(.horizontal, 5)
             .padding(.vertical, 5)
             .background(isSelected ? Color.accentColor.opacity(0.16) : Color(.systemBackground), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(alignment: .top) {
+                if isDropTarget {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 3)
+                        .padding(.horizontal, 4)
+                }
+            }
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct ShapeDropLine: View {
+    let isActive: Bool
+
+    var body: some View {
+        Capsule()
+            .fill(isActive ? Color.accentColor : Color.clear)
+            .frame(height: 10)
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
     }
 }
 
