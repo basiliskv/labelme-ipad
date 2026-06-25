@@ -35,7 +35,26 @@ Use on iPad: http://192.168.x.x:8765
 1. Xcode で `ios/LabelmeIpad/LabelmeIpad.xcodeproj` を開く
 2. 実機 iPad または Simulator を選ぶ
 3. Run
-4. 上部の URL 欄に `http://PCのIP:8765` を入力して `Open Dir`
+4. 上部の URL 欄に `http://PCのIP:8765` を入力して `Open`
+
+## ローカルデータセット
+
+サーバーを立てずに試す場合は、データセットを zip にして上部の `Zip` を押します。
+アプリ内に展開したコピーを開くため、PC/Mac 側のサーバーは不要です。編集結果は展開後のアプリ内コピーに保存され、元の zip ファイル自体は更新しません。
+
+対応する構成:
+
+```text
+mygarbageseg/
+  images/
+    IMG_0001.JPG
+  labels/
+    IMG_0001.json
+```
+
+zip の中身は `mygarbageseg/images/...` のようにデータセットフォルダごと入れても、`images/...` と `labels/...` を zip の直下に置いても開けます。ラベルJSONがまだない画像は空のannotationとして開き、保存時に `labels/<image-stem>.json` を作ります。
+
+補助機能として、データセットフォルダをアプリの Documents に置いた場合は `Docs`、iPadOS のフォルダ選択画面から直接開く場合は `Files` も使えます。環境によってはフォルダ選択画面の `開く` が反応しないことがあるため、その場合は `Zip` を使ってください。
 
 ## UI
 
@@ -48,8 +67,10 @@ Labelme のデスクトップ UI に寄せて、左から `File List`、中央 `
 - `LineStrip`: タップで点追加、`Finish` で確定
 - Shape List の長押し: Edit、Shape Type、Duplicate、Copy/Paste、Hide/Show、Delete、Select All など
 - Shape List の右端ハンドルをドラッグ: 元labelmeと同じようにshape/polygonの描画順・保存順を並び替え
+- Edit Shapes 中に polygon/linestrip の辺をタップ: 点を追加。未選択のshapeには `Option+Click`（`Keys` で変更可）
 - Undo/Redo: toolbar の戻る/進むボタン、または外部キーボードの `Ctrl+Z` / `Ctrl+Y`（`Keys` で変更可）
 - 複数選択: 外部キーボードのShiftを押しながらCanvas上のpolygon/shapeをタップ（修飾キーは `Keys` で変更可）
+- `Keys`: 元labelmeのshortcut設定にある操作を編集。空欄で無効化、`Defaults` で初期値へ戻す
 - Polygon 結合: 同じラベルのpolygonを2つ選択した状態で `Connect Polygon`
 - 左右ペイン切替: toolbar の sidebar アイコン
 - `Fit Window / Zoom In / Zoom Out`

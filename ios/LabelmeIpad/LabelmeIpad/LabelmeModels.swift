@@ -189,7 +189,7 @@ struct LabelmeAnnotation: Codable, Equatable {
         flags = try container.decodeIfPresent([String: Bool].self, forKey: .flags) ?? [:]
         shapes = try container.decodeIfPresent([LabelmeShape].self, forKey: .shapes) ?? []
         imagePath = try container.decodeIfPresent(String.self, forKey: .imagePath) ?? ""
-        imageData = try container.decodeIfPresent(String.self, forKey: .imageData)
+        imageData = nil
         imageHeight = try container.decodeIfPresent(Int.self, forKey: .imageHeight) ?? 0
         imageWidth = try container.decodeIfPresent(Int.self, forKey: .imageWidth) ?? 0
         imageUrl = try container.decodeIfPresent(String.self, forKey: .imageUrl)
@@ -473,9 +473,13 @@ enum CanvasTool: String, CaseIterable, Identifiable {
 
 enum CanvasCommand: String, Identifiable {
     case fit
+    case fitWidth
+    case zoomToOriginal
     case zoomIn
     case zoomOut
     case cancelDraft
+    case undoLastPoint
+    case removeSelectedPoint
 
     var id: String { rawValue }
 }

@@ -15,7 +15,9 @@ struct LabelmeCanvasView: View {
     @Binding var fillsShapes: Bool
     var imageBrightness: Double
     var imageContrast: Double
-    var multiSelectModifier: ShortcutModifier
+    var isMultiSelectModifierPressed: Bool
+    var isAddPointModifierPressed: Bool
+    @Binding var canUndoLastPoint: Bool
     var onEditingBegan: () -> Void
     var onEditingEnded: () -> Void
     var onChange: () -> Void
@@ -29,7 +31,7 @@ struct LabelmeCanvasView: View {
     @State private var activeDrag: DragTarget?
     @State private var lastDragImagePoint: CGPoint?
     @State private var lastDragScreenPoint: CGPoint?
-    @State private var isMultiSelectModifierPressed = false
+    @State private var selectedVertex: (shapeID: UUID, vertexIndex: Int)?
     @State private var adjustedImage: UIImage?
 
     var body: some View {
@@ -38,13 +40,6 @@ struct LabelmeCanvasView: View {
                 canvas(proxy: proxy)
                     .gesture(canvasGesture(size: proxy.size))
                     .simultaneousGesture(zoomGesture())
-
-                KeyboardModifierObserver(
-                    modifier: multiSelectModifier,
-                    isPressed: $isMultiSelectModifierPressed
-                )
-                    .frame(width: 0, height: 0)
-                    .allowsHitTesting(false)
 
                 if !draftPoints.isEmpty {
                     draftBar
@@ -59,6 +54,9 @@ struct LabelmeCanvasView: View {
             .onChange(of: tool) {
                 cancelDraft()
             }
+            .onChange(of: draftPoints.count) { _, newValue in
+                canUndoLastPoint = newValue > 0
+            }
             .onChange(of: imageAdjustmentKey) {
                 refreshAdjustedImage()
             }
@@ -67,17 +65,26 @@ struct LabelmeCanvasView: View {
                 switch newValue {
                 case .fit:
                     fit()
+                case .fitWidth:
+                    fitWidth(viewSize: proxy.size)
+                case .zoomToOriginal:
+                    zoomToOriginal(viewSize: proxy.size)
                 case .zoomIn:
                     zoomIn()
                 case .zoomOut:
                     zoomOut()
                 case .cancelDraft:
                     cancelDraft()
+                case .undoLastPoint:
+                    undoLastPoint()
+                case .removeSelectedPoint:
+                    removeSelectedPoint()
                 }
                 command = nil
             }
             .onAppear {
                 refreshAdjustedImage()
+                canUndoLastPoint = !draftPoints.isEmpty
             }
         }
     }
@@ -85,6 +92,19 @@ struct LabelmeCanvasView: View {
     private func fit() {
         zoom = 1
         pan = .zero
+    }
+
+    private func fitWidth(viewSize: CGSize) {
+        let baseScale = CanvasTransform(viewSize: viewSize, imageSize: imageSize, zoom: 1, pan: .zero).baseScale
+        guard baseScale > 0, imageSize.width > 0 else { return }
+        zoom = min(max((viewSize.width / imageSize.width) / baseScale, 0.2), 8)
+        pan = .zero
+    }
+
+    private func zoomToOriginal(viewSize: CGSize) {
+        let baseScale = CanvasTransform(viewSize: viewSize, imageSize: imageSize, zoom: 1, pan: .zero).baseScale
+        guard baseScale > 0 else { return }
+        zoom = min(max(1 / baseScale, 0.2), 8)
     }
 
     private func zoomIn() {
@@ -408,6 +428,19 @@ struct LabelmeCanvasView: View {
     }
 
     private func handleEditTap(at point: CGPoint, transform: CanvasTransform) {
+        if isAddPointModifierPressed,
+           let edge = nearestEditableEdge(at: point, transform: transform) {
+            insertPoint(shapeID: edge.shapeID, after: edge.index, at: edge.point)
+            return
+        }
+
+        if let vertex = nearestVertex(at: point, transform: transform) {
+            selectedVertex = vertex
+            selectedShapeID = vertex.shapeID
+            selectedShapeIDs = [vertex.shapeID]
+            return
+        }
+
         if let selectedShapeID,
            let edge = nearestEdge(shapeID: selectedShapeID, at: point, transform: transform) {
             insertPoint(shapeID: selectedShapeID, after: edge.index, at: edge.point)
@@ -415,6 +448,7 @@ struct LabelmeCanvasView: View {
         }
         if let hit = hitShapeID(at: point, transform: transform) {
             selectedShapeID = hit
+            selectedVertex = nil
             if isMultiSelectModifierPressed {
                 if selectedShapeIDs.contains(hit) {
                     selectedShapeIDs.remove(hit)
@@ -431,6 +465,7 @@ struct LabelmeCanvasView: View {
         } else {
             if !isMultiSelectModifierPressed {
                 selectedShapeID = nil
+                selectedVertex = nil
                 selectedShapeIDs.removeAll()
             }
         }
@@ -443,6 +478,7 @@ struct LabelmeCanvasView: View {
 
         if let vertex = nearestVertex(at: point, transform: transform) {
             selectedShapeID = vertex.shapeID
+            selectedVertex = vertex
             if !selectedShapeIDs.contains(vertex.shapeID) {
                 selectedShapeIDs = [vertex.shapeID]
             }
@@ -450,6 +486,7 @@ struct LabelmeCanvasView: View {
         }
         if let shapeID = hitShapeID(at: point, transform: transform) {
             selectedShapeID = shapeID
+            selectedVertex = nil
             if !selectedShapeIDs.contains(shapeID) {
                 selectedShapeIDs = [shapeID]
             }
@@ -481,6 +518,7 @@ struct LabelmeCanvasView: View {
         dragStart = nil
         dragEnd = nil
         activeDrag = nil
+        canUndoLastPoint = false
     }
 
     private func commit(points: [CGPoint], shapeType: LabelmeShapeType) {
@@ -493,6 +531,7 @@ struct LabelmeCanvasView: View {
         )
         annotation.shapes.append(shape)
         selectedShapeID = shape.id
+        selectedVertex = nil
         selectedShapeIDs = [shape.id]
         onChange()
     }
@@ -502,6 +541,7 @@ struct LabelmeCanvasView: View {
               annotation.shapes[index].points.indices.contains(vertexIndex)
         else { return }
         annotation.shapes[index].points[vertexIndex] = LabelmePoint(clamped(point))
+        selectedVertex = (shapeID, vertexIndex)
         onChange()
     }
 
@@ -524,6 +564,30 @@ struct LabelmeCanvasView: View {
         guard shapeType == .polygon || shapeType == .linestrip else { return }
         let insertionIndex = min(vertexIndex + 1, annotation.shapes[index].points.count)
         annotation.shapes[index].points.insert(LabelmePoint(clamped(point)), at: insertionIndex)
+        selectedShapeID = shapeID
+        selectedShapeIDs = [shapeID]
+        selectedVertex = (shapeID, insertionIndex)
+        onChange()
+    }
+
+    private func undoLastPoint() {
+        guard !draftPoints.isEmpty else { return }
+        draftPoints.removeLast()
+        dragEnd = nil
+        canUndoLastPoint = !draftPoints.isEmpty
+    }
+
+    private func removeSelectedPoint() {
+        guard let selectedVertex,
+              let index = annotation.shapes.firstIndex(where: { $0.id == selectedVertex.shapeID }),
+              annotation.shapes[index].points.indices.contains(selectedVertex.vertexIndex)
+        else { return }
+        let shapeType = annotation.shapes[index].shapeType
+        if shapeType == .polygon, annotation.shapes[index].points.count <= 3 { return }
+        if shapeType == .linestrip, annotation.shapes[index].points.count <= 2 { return }
+        guard shapeType == .polygon || shapeType == .linestrip else { return }
+        annotation.shapes[index].points.remove(at: selectedVertex.vertexIndex)
+        self.selectedVertex = nil
         onChange()
     }
 
@@ -573,6 +637,14 @@ struct LabelmeCanvasView: View {
         }
         guard let best else { return nil }
         return (best.0, best.1)
+    }
+
+    private func nearestEditableEdge(at point: CGPoint, transform: CanvasTransform) -> (shapeID: UUID, index: Int, point: CGPoint)? {
+        for shape in annotation.shapes.reversed() where shape.isVisible && (shape.shapeType == .polygon || shape.shapeType == .linestrip) {
+            guard let edge = nearestEdge(shapeID: shape.id, at: point, transform: transform) else { continue }
+            return (shape.id, edge.index, edge.point)
+        }
+        return nil
     }
 
     private func hitShapeID(at point: CGPoint, transform: CanvasTransform) -> UUID? {
@@ -790,97 +862,4 @@ private func pointInPolygon(_ point: CGPoint, polygon: [CGPoint]) -> Bool {
         j = i
     }
     return inside
-}
-
-private struct KeyboardModifierObserver: UIViewRepresentable {
-    let modifier: ShortcutModifier
-    @Binding var isPressed: Bool
-
-    func makeUIView(context: Context) -> ModifierKeyView {
-        let view = ModifierKeyView()
-        view.modifier = modifier
-        view.onModifierChange = { newValue in
-            if isPressed != newValue {
-                isPressed = newValue
-            }
-        }
-        DispatchQueue.main.async {
-            view.becomeFirstResponder()
-        }
-        return view
-    }
-
-    func updateUIView(_ uiView: ModifierKeyView, context: Context) {
-        if uiView.modifier != modifier {
-            uiView.modifier = modifier
-            if isPressed {
-                isPressed = false
-            }
-        }
-        uiView.onModifierChange = { newValue in
-            if isPressed != newValue {
-                isPressed = newValue
-            }
-        }
-        DispatchQueue.main.async {
-            uiView.becomeFirstResponder()
-        }
-    }
-
-    final class ModifierKeyView: UIView {
-        var modifier: ShortcutModifier = .shift
-        var onModifierChange: (Bool) -> Void = { _ in }
-
-        override var canBecomeFirstResponder: Bool {
-            true
-        }
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            if window != nil {
-                DispatchQueue.main.async {
-                    self.becomeFirstResponder()
-                }
-            } else {
-                onModifierChange(false)
-            }
-        }
-
-        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-            if presses.contains(where: isPhysicalModifierPress) || presses.contains(where: hasConfiguredModifier) {
-                onModifierChange(true)
-            }
-            super.pressesBegan(presses, with: event)
-        }
-
-        override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-            if presses.contains(where: isPhysicalModifierPress) || presses.contains(where: hasConfiguredModifier) {
-                onModifierChange(true)
-            }
-            super.pressesChanged(presses, with: event)
-        }
-
-        override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-            if presses.contains(where: isPhysicalModifierPress) {
-                onModifierChange(false)
-            }
-            super.pressesEnded(presses, with: event)
-        }
-
-        override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-            if presses.contains(where: isPhysicalModifierPress) {
-                onModifierChange(false)
-            }
-            super.pressesCancelled(presses, with: event)
-        }
-
-        private func hasConfiguredModifier(_ press: UIPress) -> Bool {
-            guard let flags = press.key?.modifierFlags else { return false }
-            return modifier.matches(flags)
-        }
-
-        private func isPhysicalModifierPress(_ press: UIPress) -> Bool {
-            modifier.isPhysicalModifierPress(press)
-        }
-    }
 }

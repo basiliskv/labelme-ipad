@@ -1,18 +1,22 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var store = DatasetStore()
     @AppStorage("multiSelectModifier") private var multiSelectModifierRaw = ShortcutModifier.shift.rawValue
-    @AppStorage("undoShortcutKey") private var undoShortcutKeyRaw = "z"
-    @AppStorage("undoShortcutModifier") private var undoShortcutModifierRaw = ShortcutModifier.control.rawValue
-    @AppStorage("redoShortcutKey") private var redoShortcutKeyRaw = "y"
-    @AppStorage("redoShortcutModifier") private var redoShortcutModifierRaw = ShortcutModifier.control.rawValue
+    @AppStorage("addPointModifier") private var addPointModifierRaw = ShortcutModifier.option.rawValue
+    @AppStorage("keyboardShortcutOverrides") private var keyboardShortcutOverrides = ShortcutRegistry.defaultJSON()
     @State private var serverDraft = ""
     @State private var canvasCommand: CanvasCommand?
     @State private var showsFileList = true
     @State private var showsInspector = true
     @State private var showsShortcutSettings = false
+    @State private var localDatasetPickerMode: LocalDatasetPickerMode?
+    @State private var canUndoLastPoint = false
+    @State private var labelFocusRequest = 0
+    @State private var isMultiSelectModifierPressed = false
+    @State private var isAddPointModifierPressed = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,8 +36,6 @@ struct ContentView: View {
                         canvasCommand: $canvasCommand,
                         showsFileList: $showsFileList,
                         showsInspector: $showsInspector,
-                        undoShortcut: undoShortcut,
-                        redoShortcut: redoShortcut,
                         onShowShortcutSettings: { showsShortcutSettings = true }
                     )
                     Divider()
@@ -43,12 +45,24 @@ struct ContentView: View {
                 if showsInspector {
                     Divider()
 
-                    InspectorPanel(store: store)
+                    InspectorPanel(store: store, labelFocusRequest: $labelFocusRequest)
                         .frame(width: 242)
                 }
             }
         }
         .background(Color(.systemGroupedBackground))
+        .overlay {
+            AppKeyboardShortcutObserver(
+                registry: shortcutRegistry,
+                multiSelectModifier: multiSelectModifier,
+                addPointModifier: addPointModifier,
+                isMultiSelectPressed: $isMultiSelectModifierPressed,
+                isAddPointPressed: $isAddPointModifierPressed,
+                onAction: handleShortcut
+            )
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+        }
         .task {
             serverDraft = store.serverBaseURL
             await store.connect()
@@ -61,12 +75,19 @@ struct ContentView: View {
         .sheet(isPresented: $showsShortcutSettings) {
             ShortcutSettingsView(
                 multiSelectModifierRaw: $multiSelectModifierRaw,
-                undoModifierRaw: $undoShortcutModifierRaw,
-                undoKeyRaw: $undoShortcutKeyRaw,
-                redoModifierRaw: $redoShortcutModifierRaw,
-                redoKeyRaw: $redoShortcutKeyRaw
+                addPointModifierRaw: $addPointModifierRaw,
+                keyboardShortcutOverrides: $keyboardShortcutOverrides
             )
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
+        }
+        .fullScreenCover(item: $localDatasetPickerMode) { mode in
+            LocalDatasetPicker(mode: mode) { url in
+                localDatasetPickerMode = nil
+                openLocalDataset(url, mode: mode)
+            } onCancel: {
+                localDatasetPickerMode = nil
+            }
+            .ignoresSafeArea()
         }
     }
 
@@ -74,18 +95,12 @@ struct ContentView: View {
         ShortcutModifier(rawValue: multiSelectModifierRaw) ?? .shift
     }
 
-    private var undoShortcut: ConfiguredKeyboardShortcut {
-        ConfiguredKeyboardShortcut(
-            key: ShortcutKeyChoices.normalized(undoShortcutKeyRaw, default: "z"),
-            modifier: ShortcutModifier(rawValue: undoShortcutModifierRaw) ?? .control
-        )
+    private var addPointModifier: ShortcutModifier {
+        ShortcutModifier(rawValue: addPointModifierRaw) ?? .option
     }
 
-    private var redoShortcut: ConfiguredKeyboardShortcut {
-        ConfiguredKeyboardShortcut(
-            key: ShortcutKeyChoices.normalized(redoShortcutKeyRaw, default: "y"),
-            modifier: ShortcutModifier(rawValue: redoShortcutModifierRaw) ?? .control
-        )
+    private var shortcutRegistry: ShortcutRegistry {
+        ShortcutRegistry(json: keyboardShortcutOverrides)
     }
 
     private var connectionBar: some View {
@@ -104,8 +119,43 @@ struct ContentView: View {
                 .frame(maxWidth: 300)
 
             Button {
-                store.serverBaseURL = serverDraft
-                Task { await store.connect() }
+                Task { await store.openAppDocumentsDataset() }
+            } label: {
+                Label {
+                    Text("Docs")
+                } icon: {
+                    LabelmeIconView(icon: .fileList, size: 15)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                localDatasetPickerMode = .openZip
+            } label: {
+                Label {
+                    Text("Zip")
+                } icon: {
+                    LabelmeIconView(icon: .copy, size: 15)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                localDatasetPickerMode = .openFolder
+            } label: {
+                Label {
+                    Text("Files")
+                } icon: {
+                    LabelmeIconView(icon: .folderOpen, size: 15)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                openServer()
             } label: {
                 Label {
                     Text("Open")
@@ -142,6 +192,96 @@ struct ContentView: View {
         .background(Color(.systemBackground))
     }
 
+    private func handleShortcut(_ action: ShortcutAction) {
+        switch action {
+        case .close:
+            store.closeCurrentFile()
+        case .open:
+            openServer()
+        case .openDir:
+            localDatasetPickerMode = .openFolder
+        case .quit, .saveAs, .saveTo, .deleteFile, .createOrientedRectangle:
+            store.reportUnsupportedShortcut(action)
+        case .save:
+            Task { await store.save() }
+        case .openNext:
+            Task { await store.selectNext() }
+        case .openPrev:
+            Task { await store.selectPrevious() }
+        case .zoomIn:
+            canvasCommand = .zoomIn
+        case .zoomOut:
+            canvasCommand = .zoomOut
+        case .zoomToOriginal:
+            canvasCommand = .zoomToOriginal
+        case .fitWindow:
+            canvasCommand = .fit
+        case .fitWidth:
+            canvasCommand = .fitWidth
+        case .createPolygon:
+            store.tool = .polygon
+        case .createRectangle:
+            store.tool = .rectangle
+        case .createCircle:
+            store.tool = .circle
+        case .createLine:
+            store.tool = .line
+        case .createPoint:
+            store.tool = .point
+        case .createLinestrip:
+            store.tool = .linestrip
+        case .editShape:
+            store.tool = .edit
+        case .deleteShape:
+            store.deleteSelectedShape()
+        case .duplicateShape:
+            store.duplicateSelectedShape()
+        case .copyShape:
+            store.copySelectedShape()
+        case .pasteShape:
+            store.pasteShapes()
+        case .undo:
+            if canUndoLastPoint {
+                canvasCommand = .undoLastPoint
+            } else {
+                store.undo()
+            }
+        case .undoLastPoint:
+            canvasCommand = .undoLastPoint
+        case .editLabel:
+            showsInspector = true
+            labelFocusRequest += 1
+        case .toggleKeepPrevMode:
+            store.toggleKeepPreviousShapes()
+        case .removeSelectedPoint:
+            canvasCommand = .removeSelectedPoint
+        case .showAllShapes:
+            store.toggleAllShapesVisibility(true)
+        case .hideAllShapes:
+            store.toggleAllShapesVisibility(false)
+        case .toggleAllShapes:
+            store.toggleAllShapesVisibility(nil)
+        case .redo:
+            store.redo()
+        }
+    }
+
+    private func openServer() {
+        store.serverBaseURL = serverDraft
+        Task { await store.connect() }
+    }
+
+    private func openLocalDataset(_ url: URL, mode: LocalDatasetPickerMode) {
+        Task {
+            switch mode {
+            case .openFolder:
+                await store.openLocalDataset(at: url)
+            case .openZip:
+                await store.importZipDataset(at: url)
+            }
+        }
+    }
+
     @ViewBuilder
     private var editorSurface: some View {
         if let image = store.image, store.annotation != nil {
@@ -157,7 +297,9 @@ struct ContentView: View {
                 fillsShapes: $store.fillsShapes,
                 imageBrightness: store.imageBrightness,
                 imageContrast: store.imageContrast,
-                multiSelectModifier: multiSelectModifier,
+                isMultiSelectModifierPressed: isMultiSelectModifierPressed,
+                isAddPointModifierPressed: isAddPointModifierPressed,
+                canUndoLastPoint: $canUndoLastPoint,
                 onEditingBegan: store.beginUndoGrouping,
                 onEditingEnded: store.endUndoGrouping,
                 onChange: store.markDirty
@@ -167,7 +309,7 @@ struct ContentView: View {
                 LabelmeIconView(icon: .image, size: 42)
                 Text("No Image")
                     .font(.title3.weight(.semibold))
-                Text("Start the PC server, then open the dataset.")
+                Text(store.items.isEmpty ? "Start the PC server, or open a local dataset folder." : "Select an image from the file list.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -199,14 +341,78 @@ struct ContentView: View {
     }
 }
 
+private enum LocalDatasetPickerMode: String, Identifiable {
+    case openFolder
+    case openZip
+
+    var id: String { rawValue }
+
+    var contentTypes: [UTType] {
+        switch self {
+        case .openFolder:
+            [.folder]
+        case .openZip:
+            [UTType(filenameExtension: "zip") ?? .data]
+        }
+    }
+
+    var asCopy: Bool {
+        self == .openZip
+    }
+}
+
+private struct LocalDatasetPicker: UIViewControllerRepresentable {
+    let mode: LocalDatasetPickerMode
+    let onPick: (URL) -> Void
+    let onCancel: () -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: mode.contentTypes,
+            asCopy: mode.asCopy
+        )
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        picker.modalPresentationStyle = .fullScreen
+        picker.shouldShowFileExtensions = true
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        let onCancel: () -> Void
+
+        init(onPick: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else {
+                onCancel()
+                return
+            }
+            onPick(url)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
+        }
+    }
+}
+
 private struct LabelmeToolbar: View {
     @ObservedObject var store: DatasetStore
     @Binding var canvasCommand: CanvasCommand?
     @Binding var showsFileList: Bool
     @Binding var showsInspector: Bool
     @State private var showsBrightnessContrast = false
-    let undoShortcut: ConfiguredKeyboardShortcut
-    let redoShortcut: ConfiguredKeyboardShortcut
     let onShowShortcutSettings: () -> Void
 
     var body: some View {
@@ -240,13 +446,11 @@ private struct LabelmeToolbar: View {
                     store.undo()
                 }
                 .disabled(!store.canUndo)
-                .keyboardShortcut(undoShortcut.keyEquivalent, modifiers: undoShortcut.eventModifiers)
 
                 ToolButton(title: "Redo", icon: .redo, isSelected: false) {
                     store.redo()
                 }
                 .disabled(!store.canRedo)
-                .keyboardShortcut(redoShortcut.keyEquivalent, modifiers: redoShortcut.eventModifiers)
 
                 toolbarDivider
 
@@ -442,46 +646,33 @@ private struct ShortcutSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @Binding var multiSelectModifierRaw: String
-    @Binding var undoModifierRaw: String
-    @Binding var undoKeyRaw: String
-    @Binding var redoModifierRaw: String
-    @Binding var redoKeyRaw: String
+    @Binding var addPointModifierRaw: String
+    @Binding var keyboardShortcutOverrides: String
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Selection") {
+                Section("Modifiers") {
                     Picker("Multi-select", selection: modifierBinding($multiSelectModifierRaw, default: .shift)) {
                         ForEach(ShortcutModifier.allCases) { modifier in
                             Text(modifier.title).tag(modifier.rawValue)
                         }
                     }
-                }
 
-                Section("Undo") {
-                    Picker("Modifier", selection: modifierBinding($undoModifierRaw, default: .control)) {
+                    Picker("Add point to edge", selection: modifierBinding($addPointModifierRaw, default: .option)) {
                         ForEach(ShortcutModifier.allCases) { modifier in
                             Text(modifier.title).tag(modifier.rawValue)
                         }
                     }
-
-                    Picker("Key", selection: keyBinding($undoKeyRaw, default: "z")) {
-                        ForEach(ShortcutKeyChoices.letters, id: \.self) { key in
-                            Text(key.uppercased()).tag(key)
-                        }
-                    }
                 }
 
-                Section("Redo") {
-                    Picker("Modifier", selection: modifierBinding($redoModifierRaw, default: .control)) {
-                        ForEach(ShortcutModifier.allCases) { modifier in
-                            Text(modifier.title).tag(modifier.rawValue)
-                        }
-                    }
-
-                    Picker("Key", selection: keyBinding($redoKeyRaw, default: "y")) {
-                        ForEach(ShortcutKeyChoices.letters, id: \.self) { key in
-                            Text(key.uppercased()).tag(key)
+                ForEach(shortcutSections, id: \.self) { section in
+                    Section(section) {
+                        ForEach(actions(in: section)) { action in
+                            TextField(action.title, text: shortcutBinding(for: action), prompt: Text(action.placeholderShortcutText))
+                                .font(.caption.monospaced())
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
                         }
                     }
                 }
@@ -492,10 +683,8 @@ private struct ShortcutSettingsView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Defaults") {
                         multiSelectModifierRaw = ShortcutModifier.shift.rawValue
-                        undoModifierRaw = ShortcutModifier.control.rawValue
-                        undoKeyRaw = "z"
-                        redoModifierRaw = ShortcutModifier.control.rawValue
-                        redoKeyRaw = "y"
+                        addPointModifierRaw = ShortcutModifier.option.rawValue
+                        keyboardShortcutOverrides = ShortcutRegistry.defaultJSON()
                     }
                 }
 
@@ -519,15 +708,182 @@ private struct ShortcutSettingsView: View {
         )
     }
 
-    private func keyBinding(_ binding: Binding<String>, default defaultKey: String) -> Binding<String> {
+    private var shortcutSections: [String] {
+        ["File", "View", "Edit"]
+    }
+
+    private func actions(in section: String) -> [ShortcutAction] {
+        ShortcutAction.allCases.filter { $0.section == section }
+    }
+
+    private func shortcutBinding(for action: ShortcutAction) -> Binding<String> {
         Binding(
             get: {
-                ShortcutKeyChoices.normalized(binding.wrappedValue, default: defaultKey)
+                ShortcutRegistry(json: keyboardShortcutOverrides).shortcutText(for: action)
             },
             set: { newValue in
-                binding.wrappedValue = ShortcutKeyChoices.normalized(newValue, default: defaultKey)
+                keyboardShortcutOverrides = ShortcutRegistry.json(
+                    updating: keyboardShortcutOverrides,
+                    action: action,
+                    shortcutText: newValue
+                )
             }
         )
+    }
+}
+
+private struct AppKeyboardShortcutObserver: UIViewRepresentable {
+    let registry: ShortcutRegistry
+    let multiSelectModifier: ShortcutModifier
+    let addPointModifier: ShortcutModifier
+    @Binding var isMultiSelectPressed: Bool
+    @Binding var isAddPointPressed: Bool
+    let onAction: (ShortcutAction) -> Void
+
+    func makeUIView(context: Context) -> ShortcutKeyView {
+        let view = ShortcutKeyView()
+        update(view)
+        view.activateIfAppropriate()
+        return view
+    }
+
+    func updateUIView(_ uiView: ShortcutKeyView, context: Context) {
+        update(uiView)
+        uiView.activateIfAppropriate()
+    }
+
+    private func update(_ view: ShortcutKeyView) {
+        view.registry = registry
+        view.multiSelectModifier = multiSelectModifier
+        view.addPointModifier = addPointModifier
+        view.onShortcutAction = onAction
+        view.onModifierChange = { newMultiSelectValue, newAddPointValue in
+            if isMultiSelectPressed != newMultiSelectValue {
+                isMultiSelectPressed = newMultiSelectValue
+            }
+            if isAddPointPressed != newAddPointValue {
+                isAddPointPressed = newAddPointValue
+            }
+        }
+    }
+
+    final class ShortcutKeyView: UIView {
+        var registry = ShortcutRegistry(json: ShortcutRegistry.defaultJSON())
+        var multiSelectModifier: ShortcutModifier = .shift
+        var addPointModifier: ShortcutModifier = .option
+        var onShortcutAction: (ShortcutAction) -> Void = { _ in }
+        var onModifierChange: (_ isMultiSelectPressed: Bool, _ isAddPointPressed: Bool) -> Void = { _, _ in }
+
+        private var isMultiSelectPressed = false
+        private var isAddPointPressed = false
+
+        override var canBecomeFirstResponder: Bool {
+            true
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil {
+                activateIfAppropriate()
+            } else {
+                resetPressedState()
+            }
+        }
+
+        func activateIfAppropriate() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil else { return }
+                guard self.window?.activeTextInputResponder == nil else { return }
+                self.becomeFirstResponder()
+            }
+        }
+
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            updatePressedState(with: presses, isPressed: true)
+            var handled = false
+            for press in presses {
+                guard let action = registry.action(for: press) else { continue }
+                onShortcutAction(action)
+                handled = true
+            }
+            if !handled {
+                super.pressesBegan(presses, with: event)
+            }
+        }
+
+        override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            updatePressedState(with: presses, isPressed: true)
+            super.pressesChanged(presses, with: event)
+        }
+
+        override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            updatePressedState(with: presses, isPressed: false)
+            super.pressesEnded(presses, with: event)
+        }
+
+        override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            updatePressedState(with: presses, isPressed: false)
+            super.pressesCancelled(presses, with: event)
+        }
+
+        private func resetPressedState() {
+            setPressedState(isMultiSelectPressed: false, isAddPointPressed: false)
+        }
+
+        private func updatePressedState(with presses: Set<UIPress>, isPressed: Bool) {
+            var nextMultiSelectValue = isMultiSelectPressed
+            var nextAddPointValue = isAddPointPressed
+
+            for press in presses {
+                if multiSelectModifier.isPhysicalModifierPress(press) {
+                    nextMultiSelectValue = isPressed
+                }
+                if addPointModifier.isPhysicalModifierPress(press) {
+                    nextAddPointValue = isPressed
+                }
+                if isPressed, let flags = press.key?.modifierFlags {
+                    if multiSelectModifier.matches(flags) {
+                        nextMultiSelectValue = true
+                    }
+                    if addPointModifier.matches(flags) {
+                        nextAddPointValue = true
+                    }
+                }
+            }
+
+            setPressedState(isMultiSelectPressed: nextMultiSelectValue, isAddPointPressed: nextAddPointValue)
+        }
+
+        private func setPressedState(isMultiSelectPressed newMultiSelectValue: Bool, isAddPointPressed newAddPointValue: Bool) {
+            guard isMultiSelectPressed != newMultiSelectValue || isAddPointPressed != newAddPointValue else { return }
+            isMultiSelectPressed = newMultiSelectValue
+            isAddPointPressed = newAddPointValue
+            onModifierChange(newMultiSelectValue, newAddPointValue)
+        }
+    }
+}
+
+private extension UIWindow {
+    var activeTextInputResponder: UIView? {
+        findActiveTextInputResponder(in: self)
+    }
+
+    private func findActiveTextInputResponder(in view: UIView) -> UIView? {
+        if view.isFirstResponder, view.isTextInputResponder {
+            return view
+        }
+        for subview in view.subviews {
+            if let responder = findActiveTextInputResponder(in: subview) {
+                return responder
+            }
+        }
+        return nil
+    }
+}
+
+private extension UIView {
+    var isTextInputResponder: Bool {
+        self is UITextField || self is UITextView
     }
 }
 
@@ -619,6 +975,8 @@ private struct ImageRow: View {
 
 private struct InspectorPanel: View {
     @ObservedObject var store: DatasetStore
+    @Binding var labelFocusRequest: Int
+    @FocusState private var isLabelFieldFocused: Bool
     @State private var draggedShapeID: UUID?
     @State private var shapeDropTarget: ShapeDropTarget?
 
@@ -636,6 +994,9 @@ private struct InspectorPanel: View {
             }
         }
         .background(Color(.secondarySystemGroupedBackground))
+        .onChange(of: labelFocusRequest) {
+            isLabelFieldFocused = true
+        }
     }
 
     private var inspectorHeader: some View {
@@ -662,6 +1023,7 @@ private struct InspectorPanel: View {
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .focused($isLabelFieldFocused)
 
             if let selected = store.selectedShape {
                 Picker("Shape", selection: shapeTypeBinding(selected)) {
