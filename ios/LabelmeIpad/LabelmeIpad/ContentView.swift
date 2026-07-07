@@ -50,7 +50,11 @@ struct ContentView: View {
                 if showsInspector {
                     Divider()
 
-                    InspectorPanel(store: store, labelFocusRequest: $labelFocusRequest)
+                    InspectorPanel(
+                        store: store,
+                        labelFocusRequest: $labelFocusRequest,
+                        isMultiSelectModifierPressed: isMultiSelectModifierPressed
+                    )
                         .frame(width: 242)
                 }
             }
@@ -63,7 +67,7 @@ struct ContentView: View {
                 addPointModifier: addPointModifier,
                 isMultiSelectPressed: $isMultiSelectModifierPressed,
                 isAddPointPressed: $isAddPointModifierPressed,
-                onAction: handleShortcut
+                onActions: handleShortcuts
             )
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
@@ -181,6 +185,38 @@ struct ContentView: View {
         .padding(.horizontal, 9)
         .frame(height: 38)
         .background(Color(.systemBackground))
+    }
+
+    private func handleShortcuts(_ actions: [ShortcutAction]) {
+        guard let action = resolvedShortcutAction(from: actions) else { return }
+        handleShortcut(action)
+    }
+
+    private func resolvedShortcutAction(from actions: [ShortcutAction]) -> ShortcutAction? {
+        guard !actions.isEmpty else { return nil }
+        if actions.contains(.editShape),
+           let creationAction = preferredCreationAction(in: actions) {
+            if store.tool.shortcutAction == creationAction {
+                return .editShape
+            }
+            if store.tool == .edit {
+                return creationAction
+            }
+            return actions.contains(store.tool.shortcutAction) ? .editShape : creationAction
+        }
+        return actions.first
+    }
+
+    private func preferredCreationAction(in actions: [ShortcutAction]) -> ShortcutAction? {
+        let creationPriority: [ShortcutAction] = [
+            .createPolygon,
+            .createRectangle,
+            .createCircle,
+            .createLine,
+            .createPoint,
+            .createLinestrip
+        ]
+        return creationPriority.first { actions.contains($0) }
     }
 
     private func handleShortcut(_ action: ShortcutAction) {
@@ -1501,7 +1537,7 @@ private struct AppKeyboardShortcutObserver: UIViewRepresentable {
     let addPointModifier: ShortcutModifier
     @Binding var isMultiSelectPressed: Bool
     @Binding var isAddPointPressed: Bool
-    let onAction: (ShortcutAction) -> Void
+    let onActions: ([ShortcutAction]) -> Void
 
     func makeUIView(context: Context) -> ShortcutKeyView {
         let view = ShortcutKeyView()
@@ -1519,7 +1555,7 @@ private struct AppKeyboardShortcutObserver: UIViewRepresentable {
         view.registry = registry
         view.multiSelectModifier = multiSelectModifier
         view.addPointModifier = addPointModifier
-        view.onShortcutAction = onAction
+        view.onShortcutActions = onActions
         view.onModifierChange = { newMultiSelectValue, newAddPointValue in
             if isMultiSelectPressed != newMultiSelectValue {
                 isMultiSelectPressed = newMultiSelectValue
@@ -1534,7 +1570,7 @@ private struct AppKeyboardShortcutObserver: UIViewRepresentable {
         var registry = ShortcutRegistry(json: ShortcutRegistry.defaultJSON())
         var multiSelectModifier: ShortcutModifier = .shift
         var addPointModifier: ShortcutModifier = .option
-        var onShortcutAction: (ShortcutAction) -> Void = { _ in }
+        var onShortcutActions: ([ShortcutAction]) -> Void = { _ in }
         var onModifierChange: (_ isMultiSelectPressed: Bool, _ isAddPointPressed: Bool) -> Void = { _, _ in }
 
         private var isMultiSelectPressed = false
@@ -1565,8 +1601,9 @@ private struct AppKeyboardShortcutObserver: UIViewRepresentable {
             updatePressedState(with: presses, isPressed: true)
             var handled = false
             for press in presses {
-                guard let action = registry.action(for: press) else { continue }
-                onShortcutAction(action)
+                let actions = registry.actions(for: press)
+                guard !actions.isEmpty else { continue }
+                onShortcutActions(actions)
                 handled = true
             }
             if !handled {
@@ -1739,6 +1776,7 @@ private struct ImageRow: View {
 private struct InspectorPanel: View {
     @ObservedObject var store: DatasetStore
     @Binding var labelFocusRequest: Int
+    let isMultiSelectModifierPressed: Bool
     @FocusState private var isLabelFieldFocused: Bool
     @State private var draggedShapeID: UUID?
     @State private var shapeDropTarget: ShapeDropTarget?
@@ -1863,7 +1901,11 @@ private struct InspectorPanel: View {
                                     store.toggleShapeVisibility(id: shape.id)
                                 }
                             ) {
-                                store.selectShape(shape)
+                                if isMultiSelectModifierPressed {
+                                    store.selectShape(shape, extending: true)
+                                } else {
+                                    store.selectShape(shape)
+                                }
                             }
                             .onDrop(
                                 of: [UTType.text],
@@ -1976,6 +2018,20 @@ private struct InspectorPanel: View {
 private enum ShapeDropTarget: Equatable {
     case before(UUID)
     case end
+}
+
+private extension CanvasTool {
+    var shortcutAction: ShortcutAction {
+        switch self {
+        case .edit: .editShape
+        case .polygon: .createPolygon
+        case .rectangle: .createRectangle
+        case .circle: .createCircle
+        case .line: .createLine
+        case .point: .createPoint
+        case .linestrip: .createLinestrip
+        }
+    }
 }
 
 private struct ShapeRow: View {

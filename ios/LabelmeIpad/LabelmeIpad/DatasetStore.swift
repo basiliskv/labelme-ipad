@@ -228,7 +228,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .createLine: "ライン作成モードに切り替えます。"
         case .createPoint: "点作成モードに切り替えます。"
         case .createLinestrip: "折れ線作成モードに切り替えます。"
-        case .editShape: "編集・選択モードに戻します。"
+        case .editShape: "編集・選択モードに戻します。作成モードと同じショートカットにすると、押すたびに編集と作成を切り替えます。"
         case .selectAllShapes: "現在の画像内のすべての図形を選択します。"
         case .clearShapeSelection: "図形の選択状態を解除します。"
         case .deleteShape: "選択中の図形を削除します。複数選択にも対応します。"
@@ -339,6 +339,19 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     var placeholderShortcutText: String {
         defaultShortcutText.isEmpty ? "Unassigned" : defaultShortcutText
     }
+
+    var isShapeCreationMode: Bool {
+        switch self {
+        case .createPolygon, .createRectangle, .createCircle, .createLine, .createPoint, .createLinestrip:
+            true
+        default:
+            false
+        }
+    }
+
+    func canShareShortcut(with other: ShortcutAction) -> Bool {
+        (self == .editShape && other.isShapeCreationMode) || (other == .editShape && isShapeCreationMode)
+    }
 }
 
 struct ShortcutRegistry {
@@ -367,19 +380,21 @@ struct ShortcutRegistry {
         guard !newShortcuts.isEmpty else { return [] }
         return ShortcutAction.allCases.compactMap { otherAction in
             guard otherAction != action else { return nil }
+            guard !action.canShareShortcut(with: otherAction) else { return nil }
             let overlaps = shortcuts(for: otherAction).filter { newShortcuts.contains($0) }
             guard !overlaps.isEmpty else { return nil }
             return ShortcutConflict(action: otherAction, shortcuts: overlaps)
         }
     }
 
-    func action(for press: UIPress) -> ShortcutAction? {
-        for action in ShortcutAction.allCases {
-            if shortcuts(for: action).contains(where: { $0.matches(press) }) {
-                return action
-            }
+    func actions(for press: UIPress) -> [ShortcutAction] {
+        ShortcutAction.allCases.filter { action in
+            shortcuts(for: action).contains(where: { $0.matches(press) })
         }
-        return nil
+    }
+
+    func action(for press: UIPress) -> ShortcutAction? {
+        actions(for: press).first
     }
 
     static func json(updating json: String, action: ShortcutAction, shortcutText: String) -> String {
@@ -399,6 +414,7 @@ struct ShortcutRegistry {
         var updatedJSON = json
         if !newShortcuts.isEmpty {
             for otherAction in ShortcutAction.allCases where otherAction != action {
+                guard !action.canShareShortcut(with: otherAction) else { continue }
                 let remaining = registry.shortcuts(for: otherAction).filter { !newShortcuts.contains($0) }
                 if remaining.count != registry.shortcuts(for: otherAction).count {
                     let remainingText = remaining.map(\.shortcutText).joined(separator: ", ")
