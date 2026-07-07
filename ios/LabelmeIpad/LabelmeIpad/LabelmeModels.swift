@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import SwiftUI
+import UIKit
 
 struct ServerHealth: Decodable {
     let ok: Bool
@@ -726,5 +727,228 @@ enum LabelmePolygonConnector {
 
     private static func length(_ point: CGPoint) -> CGFloat {
         hypot(point.x, point.y)
+    }
+}
+
+enum LabelmePolygonOverlapResolver {
+    enum ResolveError: LocalizedError {
+        case noPolygons
+        case rasterizeFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .noPolygons:
+                "No polygon shapes are available."
+            case .rasterizeFailed:
+                "Failed to subtract overlapping polygons."
+            }
+        }
+    }
+
+    static func subtractUpperLayers(from shapes: [LabelmeShape], limitedTo selectedIDs: Set<UUID>) throws -> [LabelmeShape] {
+        guard shapes.contains(where: { selectedIDs.contains($0.id) && $0.shapeType == .polygon && $0.points.count >= 3 }) else {
+            throw ResolveError.noPolygons
+        }
+
+        var result = shapes
+        for index in result.indices {
+            guard selectedIDs.contains(result[index].id),
+                  result[index].shapeType == .polygon,
+                  result[index].points.count >= 3
+            else { continue }
+            let cutters = result[(index + 1)...]
+                .filter { selectedIDs.contains($0.id) && $0.shapeType == .polygon && $0.points.count >= 3 }
+            guard !cutters.isEmpty else { continue }
+            guard let resolved = try subtract(cutters: cutters, from: result[index]) else {
+                result[index].isVisible = false
+                continue
+            }
+            result[index] = resolved
+        }
+        return result
+    }
+
+    private static func subtract(cutters: [LabelmeShape], from target: LabelmeShape) throws -> LabelmeShape? {
+        let targetPoints = target.points.map(\.cgPoint)
+        var bounds = boundingRect(points: targetPoints)
+        for cutter in cutters {
+            bounds = bounds.union(boundingRect(points: cutter.points.map(\.cgPoint)))
+        }
+        bounds = bounds.insetBy(dx: -2, dy: -2)
+        guard bounds.width > 1, bounds.height > 1 else { return target }
+
+        let maxDimension: CGFloat = 1200
+        let scale = min(1, maxDimension / max(bounds.width, bounds.height))
+        let width = max(4, Int(ceil(bounds.width * scale)))
+        let height = max(4, Int(ceil(bounds.height * scale)))
+        var pixels = [UInt8](repeating: 0, count: width * height)
+
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: 0
+        ) else {
+            throw ResolveError.rasterizeFailed
+        }
+
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.setShouldAntialias(false)
+        context.setFillColor(UIColor.white.cgColor)
+        context.addPath(path(for: target.points, bounds: bounds, scale: scale))
+        context.fillPath()
+
+        context.setFillColor(UIColor.black.cgColor)
+        for cutter in cutters {
+            guard cutterIntersects(cutter, target: target) else { continue }
+            context.addPath(path(for: cutter.points, bounds: bounds, scale: scale))
+            context.fillPath()
+        }
+
+        let loops = polygonLoops(from: pixels, width: width, height: height)
+            .map { simplify($0.map { point in
+                LabelmePoint(
+                    x: bounds.minX + point.x / scale,
+                    y: bounds.minY + point.y / scale
+                )
+            }) }
+            .filter { $0.count >= 3 }
+
+        guard !loops.isEmpty else { return nil }
+
+        var connected = loops[0]
+        for loop in loops.dropFirst() {
+            connected = try LabelmePolygonConnector.connect(connected, loop)
+        }
+
+        var updated = target
+        updated.points = connected
+        return updated
+    }
+
+    private static func path(for points: [LabelmePoint], bounds: CGRect, scale: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        guard let first = points.first?.cgPoint else { return path }
+        path.move(to: CGPoint(x: (first.x - bounds.minX) * scale, y: (first.y - bounds.minY) * scale))
+        for point in points.dropFirst().map(\.cgPoint) {
+            path.addLine(to: CGPoint(x: (point.x - bounds.minX) * scale, y: (point.y - bounds.minY) * scale))
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    private static func boundingRect(points: [CGPoint]) -> CGRect {
+        guard let first = points.first else { return .zero }
+        var minX = first.x
+        var minY = first.y
+        var maxX = first.x
+        var maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            minY = min(minY, point.y)
+            maxX = max(maxX, point.x)
+            maxY = max(maxY, point.y)
+        }
+        return CGRect(x: minX, y: minY, width: max(maxX - minX, 1), height: max(maxY - minY, 1))
+    }
+
+    private static func cutterIntersects(_ cutter: LabelmeShape, target: LabelmeShape) -> Bool {
+        boundingRect(points: cutter.points.map(\.cgPoint)).intersects(boundingRect(points: target.points.map(\.cgPoint)))
+    }
+
+    private static func polygonLoops(from pixels: [UInt8], width: Int, height: Int) -> [[CGPoint]] {
+        func isFilled(_ x: Int, _ y: Int) -> Bool {
+            x >= 0 && x < width && y >= 0 && y < height && pixels[y * width + x] > 127
+        }
+
+        var edgesByStart: [GridPoint: [GridPoint]] = [:]
+        func addEdge(_ start: GridPoint, _ end: GridPoint) {
+            edgesByStart[start, default: []].append(end)
+        }
+
+        for y in 0..<height {
+            for x in 0..<width where isFilled(x, y) {
+                if !isFilled(x, y - 1) { addEdge(GridPoint(x, y), GridPoint(x + 1, y)) }
+                if !isFilled(x + 1, y) { addEdge(GridPoint(x + 1, y), GridPoint(x + 1, y + 1)) }
+                if !isFilled(x, y + 1) { addEdge(GridPoint(x + 1, y + 1), GridPoint(x, y + 1)) }
+                if !isFilled(x - 1, y) { addEdge(GridPoint(x, y + 1), GridPoint(x, y)) }
+            }
+        }
+
+        var loops: [[CGPoint]] = []
+        while let start = edgesByStart.keys.min(), let firstEnd = edgesByStart[start]?.popLast() {
+            if edgesByStart[start]?.isEmpty == true { edgesByStart.removeValue(forKey: start) }
+            var loop = [start]
+            var current = firstEnd
+            var guardCount = 0
+            while current != start, guardCount < width * height * 8 {
+                loop.append(current)
+                guardCount += 1
+                guard let next = edgesByStart[current]?.popLast() else { break }
+                if edgesByStart[current]?.isEmpty == true { edgesByStart.removeValue(forKey: current) }
+                current = next
+            }
+            if current == start, loop.count >= 3 {
+                loops.append(loop.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) })
+            }
+        }
+        return loops.sorted { abs(signedArea($0)) > abs(signedArea($1)) }
+    }
+
+    private struct GridPoint: Hashable, Comparable {
+        let x: Int
+        let y: Int
+
+        init(_ x: Int, _ y: Int) {
+            self.x = x
+            self.y = y
+        }
+
+        static func < (lhs: GridPoint, rhs: GridPoint) -> Bool {
+            lhs.y == rhs.y ? lhs.x < rhs.x : lhs.y < rhs.y
+        }
+    }
+
+    private static func simplify(_ points: [LabelmePoint]) -> [LabelmePoint] {
+        guard points.count > 3 else { return points }
+        var result: [LabelmePoint] = []
+        for point in points {
+            if let last = result.last, pointDistance(last.cgPoint, point.cgPoint) < 2 {
+                continue
+            }
+            result.append(point)
+        }
+        var index = 0
+        while result.count > 3 && index < result.count {
+            let prev = result[(index - 1 + result.count) % result.count].cgPoint
+            let current = result[index].cgPoint
+            let next = result[(index + 1) % result.count].cgPoint
+            let area = abs((current.x - prev.x) * (next.y - prev.y) - (current.y - prev.y) * (next.x - prev.x))
+            if area < 0.75 {
+                result.remove(at: index)
+            } else {
+                index += 1
+            }
+        }
+        return result
+    }
+
+    private static func pointDistance(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        hypot(a.x - b.x, a.y - b.y)
+    }
+
+    private static func signedArea(_ points: [CGPoint]) -> CGFloat {
+        guard points.count >= 3 else { return 0 }
+        var area: CGFloat = 0
+        for index in points.indices {
+            let a = points[index]
+            let b = points[(index + 1) % points.count]
+            area += a.x * b.y - b.x * a.y
+        }
+        return area / 2
     }
 }

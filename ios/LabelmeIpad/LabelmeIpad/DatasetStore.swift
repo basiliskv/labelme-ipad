@@ -69,6 +69,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case close
     case open
     case openDir
+    case openZip
+    case openDocumentsDataset
+    case showSettings
     case quit
     case save
     case saveAs
@@ -89,10 +92,20 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case createPoint
     case createLinestrip
     case editShape
+    case selectAllShapes
+    case clearShapeSelection
     case deleteShape
     case duplicateShape
     case copyShape
     case pasteShape
+    case connectPolygons
+    case subtractOverlap
+    case changeSelectedToPolygon
+    case changeSelectedToRectangle
+    case changeSelectedToCircle
+    case changeSelectedToLine
+    case changeSelectedToPoint
+    case changeSelectedToLinestrip
     case undo
     case undoLastPoint
     case editLabel
@@ -101,59 +114,153 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case showAllShapes
     case hideAllShapes
     case toggleAllShapes
+    case showSelectedShapes
+    case hideSelectedShapes
+    case toggleSelectedShapes
+    case toggleLabels
+    case toggleFillPolygons
+    case toggleFileList
+    case toggleLabelPanel
+    case showBrightnessContrast
+    case resetBrightnessContrast
     case redo
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .close: "Close"
-        case .open: "Open"
-        case .openDir: "Open Dir"
-        case .quit: "Quit"
-        case .save: "Save"
-        case .saveAs: "Save As"
-        case .saveTo: "Change Output Dir"
-        case .deleteFile: "Delete File"
-        case .openNext: "Next Image"
-        case .openPrev: "Prev Image"
-        case .zoomIn: "Zoom In"
-        case .zoomOut: "Zoom Out"
-        case .zoomToOriginal: "Zoom 100%"
-        case .fitWindow: "Fit Window"
-        case .fitWidth: "Fit Width"
-        case .createPolygon: "Create Polygon"
-        case .createRectangle: "Create Rectangle"
-        case .createOrientedRectangle: "Create Oriented Rectangle"
-        case .createCircle: "Create Circle"
-        case .createLine: "Create Line"
-        case .createPoint: "Create Point"
-        case .createLinestrip: "Create LineStrip"
-        case .editShape: "Edit Shapes"
-        case .deleteShape: "Delete Shapes"
-        case .duplicateShape: "Duplicate Shapes"
-        case .copyShape: "Copy Shapes"
-        case .pasteShape: "Paste Shapes"
-        case .undo: "Undo"
-        case .undoLastPoint: "Undo Last Point"
-        case .editLabel: "Edit Label"
-        case .toggleKeepPrevMode: "Keep Prev Mode"
-        case .removeSelectedPoint: "Remove Selected Point"
-        case .showAllShapes: "Show All Shapes"
-        case .hideAllShapes: "Hide All Shapes"
-        case .toggleAllShapes: "Toggle All Shapes"
-        case .redo: "Redo"
+        case .close: "画像を閉じる"
+        case .open: "サーバーへ接続"
+        case .openDir: "ローカルフォルダを開く"
+        case .openZip: "Zip を読み込む"
+        case .openDocumentsDataset: "アプリ内データセットを開く"
+        case .showSettings: "設定を開く"
+        case .quit: "終了"
+        case .save: "保存"
+        case .saveAs: "別名で保存"
+        case .saveTo: "出力先を変更"
+        case .deleteFile: "画像ファイルを削除"
+        case .openNext: "次の画像"
+        case .openPrev: "前の画像"
+        case .zoomIn: "拡大"
+        case .zoomOut: "縮小"
+        case .zoomToOriginal: "100% 表示"
+        case .fitWindow: "ウィンドウに合わせる"
+        case .fitWidth: "幅に合わせる"
+        case .createPolygon: "ポリゴン作成"
+        case .createRectangle: "矩形作成"
+        case .createOrientedRectangle: "回転矩形作成"
+        case .createCircle: "円作成"
+        case .createLine: "ライン作成"
+        case .createPoint: "点作成"
+        case .createLinestrip: "折れ線作成"
+        case .editShape: "図形編集"
+        case .selectAllShapes: "すべて選択"
+        case .clearShapeSelection: "選択解除"
+        case .deleteShape: "図形を削除"
+        case .duplicateShape: "図形を複製"
+        case .copyShape: "図形をコピー"
+        case .pasteShape: "図形を貼り付け"
+        case .connectPolygons: "ポリゴンを結合"
+        case .subtractOverlap: "重なり部分を削る"
+        case .changeSelectedToPolygon: "選択図形をポリゴンに変更"
+        case .changeSelectedToRectangle: "選択図形を矩形に変更"
+        case .changeSelectedToCircle: "選択図形を円に変更"
+        case .changeSelectedToLine: "選択図形をラインに変更"
+        case .changeSelectedToPoint: "選択図形を点に変更"
+        case .changeSelectedToLinestrip: "選択図形を折れ線に変更"
+        case .undo: "元に戻す"
+        case .undoLastPoint: "最後の点を取り消す"
+        case .editLabel: "ラベルを編集"
+        case .toggleKeepPrevMode: "前画像の図形引き継ぎ"
+        case .removeSelectedPoint: "選択頂点を削除"
+        case .showAllShapes: "すべての図形を表示"
+        case .hideAllShapes: "すべての図形を非表示"
+        case .toggleAllShapes: "全図形の表示切替"
+        case .showSelectedShapes: "選択図形を表示"
+        case .hideSelectedShapes: "選択図形を非表示"
+        case .toggleSelectedShapes: "選択図形の表示切替"
+        case .toggleLabels: "ラベル表示切替"
+        case .toggleFillPolygons: "塗りつぶし表示切替"
+        case .toggleFileList: "ファイルリスト表示切替"
+        case .toggleLabelPanel: "ラベルパネル表示切替"
+        case .showBrightnessContrast: "明るさ/コントラスト"
+        case .resetBrightnessContrast: "明るさ/コントラストをリセット"
+        case .redo: "やり直す"
         }
     }
 
     var section: String {
         switch self {
-        case .close, .open, .openDir, .quit, .save, .saveAs, .saveTo, .deleteFile, .openNext, .openPrev:
-            "File"
-        case .zoomIn, .zoomOut, .zoomToOriginal, .fitWindow, .fitWidth, .showAllShapes, .hideAllShapes, .toggleAllShapes:
-            "View"
-        case .createPolygon, .createRectangle, .createOrientedRectangle, .createCircle, .createLine, .createPoint, .createLinestrip, .editShape, .deleteShape, .duplicateShape, .copyShape, .pasteShape, .undo, .undoLastPoint, .editLabel, .toggleKeepPrevMode, .removeSelectedPoint, .redo:
-            "Edit"
+        case .close, .open, .openDir, .openZip, .openDocumentsDataset, .quit, .save, .saveAs, .saveTo, .deleteFile, .openNext, .openPrev:
+            "ファイル"
+        case .zoomIn, .zoomOut, .zoomToOriginal, .fitWindow, .fitWidth, .showAllShapes, .hideAllShapes, .toggleAllShapes, .showSelectedShapes, .hideSelectedShapes, .toggleSelectedShapes, .toggleLabels, .toggleFillPolygons, .toggleFileList, .toggleLabelPanel, .showBrightnessContrast, .resetBrightnessContrast, .showSettings:
+            "表示"
+        case .createPolygon, .createRectangle, .createOrientedRectangle, .createCircle, .createLine, .createPoint, .createLinestrip, .editShape, .selectAllShapes, .clearShapeSelection, .deleteShape, .duplicateShape, .copyShape, .pasteShape, .connectPolygons, .subtractOverlap, .changeSelectedToPolygon, .changeSelectedToRectangle, .changeSelectedToCircle, .changeSelectedToLine, .changeSelectedToPoint, .changeSelectedToLinestrip, .undo, .undoLastPoint, .editLabel, .toggleKeepPrevMode, .removeSelectedPoint, .redo:
+            "編集"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .close: "現在の画像を閉じます。データセット自体は開いたままです。"
+        case .open: "設定済みのサーバーデータセットへ接続します。"
+        case .openDir: "Files からローカルの Labelme データセットフォルダを開きます。"
+        case .openZip: "Files から Labelme データセットの Zip を読み込みます。"
+        case .openDocumentsDataset: "アプリ内 Documents に置いたデータセットを開きます。"
+        case .showSettings: "設定画面を開きます。"
+        case .quit: "デスクトップ版 Labelme 互換用の予約項目です。"
+        case .save: "現在のアノテーション JSON を保存します。"
+        case .saveAs: "Labelme の Save As 相当として予約しています。"
+        case .saveTo: "出力先ラベルディレクトリ変更用として予約しています。"
+        case .deleteFile: "現在の画像ファイル削除用として予約しています。"
+        case .openNext: "ファイルリストの次の画像へ移動します。"
+        case .openPrev: "ファイルリストの前の画像へ移動します。"
+        case .zoomIn: "キャンバスを拡大します。"
+        case .zoomOut: "キャンバスを縮小します。"
+        case .zoomToOriginal: "キャンバスのズームを 100% にします。"
+        case .fitWindow: "画像全体がキャンバス内に収まるように表示します。"
+        case .fitWidth: "画像の幅がキャンバス幅に合うように表示します。"
+        case .createPolygon: "ポリゴン作成モードに切り替えます。"
+        case .createRectangle: "矩形作成モードに切り替えます。"
+        case .createOrientedRectangle: "回転矩形作成用として予約しています。"
+        case .createCircle: "円作成モードに切り替えます。"
+        case .createLine: "ライン作成モードに切り替えます。"
+        case .createPoint: "点作成モードに切り替えます。"
+        case .createLinestrip: "折れ線作成モードに切り替えます。"
+        case .editShape: "編集・選択モードに戻します。"
+        case .selectAllShapes: "現在の画像内のすべての図形を選択します。"
+        case .clearShapeSelection: "図形の選択状態を解除します。"
+        case .deleteShape: "選択中の図形を削除します。複数選択にも対応します。"
+        case .duplicateShape: "選択中の図形を複製します。複数選択にも対応します。"
+        case .copyShape: "選択中の図形をコピーします。複数選択にも対応します。"
+        case .pasteShape: "コピーした図形を現在のアノテーションに貼り付けます。"
+        case .connectPolygons: "選択中の同じラベルのポリゴン2つを結合します。"
+        case .subtractOverlap: "選択中ポリゴンだけを対象に、上レイヤー優先で重なり部分を削ります。"
+        case .changeSelectedToPolygon: "選択中の図形タイプをポリゴンに変更します。"
+        case .changeSelectedToRectangle: "選択中の図形タイプを矩形に変更します。"
+        case .changeSelectedToCircle: "選択中の図形タイプを円に変更します。"
+        case .changeSelectedToLine: "選択中の図形タイプをラインに変更します。"
+        case .changeSelectedToPoint: "選択中の図形タイプを点に変更します。"
+        case .changeSelectedToLinestrip: "選択中の図形タイプを折れ線に変更します。"
+        case .undo: "直前の編集を元に戻します。"
+        case .undoLastPoint: "図形作成中に最後に追加した点を取り消します。"
+        case .editLabel: "選択中の図形のラベル入力欄にフォーカスします。"
+        case .toggleKeepPrevMode: "空のアノテーションへ前画像の図形を引き継ぐモードを切り替えます。"
+        case .removeSelectedPoint: "選択中の図形から選択頂点を削除します。"
+        case .showAllShapes: "現在のアノテーション内のすべての図形を表示します。"
+        case .hideAllShapes: "現在のアノテーション内のすべての図形を非表示にします。"
+        case .toggleAllShapes: "すべての図形の表示・非表示を切り替えます。"
+        case .showSelectedShapes: "選択中の図形を表示します。ポリゴンを選択して使えます。"
+        case .hideSelectedShapes: "選択中の図形を非表示にします。ポリゴンを選択して使えます。"
+        case .toggleSelectedShapes: "選択中の図形の表示・非表示を切り替えます。"
+        case .toggleLabels: "キャンバス上のラベル名表示を切り替えます。"
+        case .toggleFillPolygons: "ポリゴン塗りつぶし表示を切り替えます。"
+        case .toggleFileList: "左側のファイルリスト表示を切り替えます。"
+        case .toggleLabelPanel: "右側のラベル・図形パネル表示を切り替えます。"
+        case .showBrightnessContrast: "画像の明るさ・コントラスト調整パネルを開きます。"
+        case .resetBrightnessContrast: "現在の画像の明るさ・コントラストを標準値に戻します。"
+        case .redo: "取り消した編集をやり直します。"
         }
     }
 
@@ -162,6 +269,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .close: "Ctrl+W"
         case .open: "Ctrl+O"
         case .openDir: "Ctrl+U"
+        case .openZip: ""
+        case .openDocumentsDataset: ""
+        case .showSettings: "Ctrl+,"
         case .quit: "Ctrl+Q"
         case .save: "Ctrl+S"
         case .saveAs: "Ctrl+Shift+S"
@@ -182,10 +292,20 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .createPoint: ""
         case .createLinestrip: ""
         case .editShape: "Ctrl+J"
+        case .selectAllShapes: "Ctrl+A"
+        case .clearShapeSelection: "Esc"
         case .deleteShape: "Delete"
         case .duplicateShape: "Ctrl+D"
         case .copyShape: "Ctrl+C"
         case .pasteShape: "Ctrl+V"
+        case .connectPolygons: ""
+        case .subtractOverlap: ""
+        case .changeSelectedToPolygon: ""
+        case .changeSelectedToRectangle: ""
+        case .changeSelectedToCircle: ""
+        case .changeSelectedToLine: ""
+        case .changeSelectedToPoint: ""
+        case .changeSelectedToLinestrip: ""
         case .undo: "Ctrl+Z"
         case .undoLastPoint: "Ctrl+Z"
         case .editLabel: "Ctrl+E"
@@ -194,12 +314,26 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .showAllShapes: ""
         case .hideAllShapes: ""
         case .toggleAllShapes: "T"
+        case .showSelectedShapes: ""
+        case .hideSelectedShapes: ""
+        case .toggleSelectedShapes: ""
+        case .toggleLabels: ""
+        case .toggleFillPolygons: ""
+        case .toggleFileList: ""
+        case .toggleLabelPanel: ""
+        case .showBrightnessContrast: ""
+        case .resetBrightnessContrast: ""
         case .redo: "Ctrl+Y"
         }
     }
 
     var isOriginalLabelmeShortcut: Bool {
-        self != .redo
+        switch self {
+        case .openZip, .openDocumentsDataset, .showSettings, .redo, .selectAllShapes, .clearShapeSelection, .connectPolygons, .subtractOverlap, .changeSelectedToPolygon, .changeSelectedToRectangle, .changeSelectedToCircle, .changeSelectedToLine, .changeSelectedToPoint, .changeSelectedToLinestrip, .showSelectedShapes, .hideSelectedShapes, .toggleSelectedShapes, .toggleLabels, .toggleFillPolygons, .toggleFileList, .toggleLabelPanel, .showBrightnessContrast, .resetBrightnessContrast:
+            false
+        default:
+            true
+        }
     }
 
     var placeholderShortcutText: String {
@@ -228,6 +362,17 @@ struct ShortcutRegistry {
         KeyStroke.parseList(shortcutText(for: action))
     }
 
+    func conflicts(for action: ShortcutAction, shortcutText: String) -> [ShortcutConflict] {
+        let newShortcuts = Set(KeyStroke.parseList(shortcutText))
+        guard !newShortcuts.isEmpty else { return [] }
+        return ShortcutAction.allCases.compactMap { otherAction in
+            guard otherAction != action else { return nil }
+            let overlaps = shortcuts(for: otherAction).filter { newShortcuts.contains($0) }
+            guard !overlaps.isEmpty else { return nil }
+            return ShortcutConflict(action: otherAction, shortcuts: overlaps)
+        }
+    }
+
     func action(for press: UIPress) -> ShortcutAction? {
         for action in ShortcutAction.allCases {
             if shortcuts(for: action).contains(where: { $0.matches(press) }) {
@@ -248,6 +393,26 @@ struct ShortcutRegistry {
         return registry.encodedJSON
     }
 
+    static func jsonResolvingConflicts(updating json: String, action: ShortcutAction, shortcutText: String) -> String {
+        let registry = ShortcutRegistry(json: json)
+        let newShortcuts = Set(KeyStroke.parseList(shortcutText))
+        var updatedJSON = json
+        if !newShortcuts.isEmpty {
+            for otherAction in ShortcutAction.allCases where otherAction != action {
+                let remaining = registry.shortcuts(for: otherAction).filter { !newShortcuts.contains($0) }
+                if remaining.count != registry.shortcuts(for: otherAction).count {
+                    let remainingText = remaining.map(\.shortcutText).joined(separator: ", ")
+                    updatedJSON = ShortcutRegistry.json(
+                        updating: updatedJSON,
+                        action: otherAction,
+                        shortcutText: remainingText
+                    )
+                }
+            }
+        }
+        return ShortcutRegistry.json(updating: updatedJSON, action: action, shortcutText: shortcutText)
+    }
+
     static func defaultJSON() -> String {
         "{}"
     }
@@ -260,9 +425,59 @@ struct ShortcutRegistry {
     }
 }
 
+struct ShortcutConflict: Identifiable {
+    let action: ShortcutAction
+    let shortcuts: [KeyStroke]
+
+    var id: String {
+        action.rawValue
+    }
+
+    var shortcutText: String {
+        shortcuts.map(\.shortcutText).joined(separator: ", ")
+    }
+}
+
 struct KeyStroke: Hashable {
     var key: String
     var modifiers: Set<ShortcutModifier>
+
+    var shortcutText: String {
+        let modifierText = ShortcutModifier.allCases
+            .filter { modifiers.contains($0) }
+            .map(\.shortcutDisplayName)
+        return (modifierText + [Self.displayKey(key)]).joined(separator: "+")
+    }
+
+    static func fromPress(_ press: UIPress) -> KeyStroke? {
+        guard let key = press.key else { return nil }
+        let keyName: String?
+        switch key.keyCode {
+        case .keyboardDeleteOrBackspace:
+            keyName = "backspace"
+        case .keyboardDeleteForward:
+            keyName = "delete"
+        case .keyboardEscape:
+            keyName = "escape"
+        case .keyboardReturnOrEnter:
+            keyName = "enter"
+        case .keyboardSpacebar:
+            keyName = "space"
+        case .keyboardTab:
+            keyName = "tab"
+        case .keyboardLeftShift, .keyboardRightShift,
+             .keyboardLeftControl, .keyboardRightControl,
+             .keyboardLeftAlt, .keyboardRightAlt,
+             .keyboardLeftGUI, .keyboardRightGUI:
+            keyName = nil
+        default:
+            let ignoringModifiers = key.charactersIgnoringModifiers.trimmingCharacters(in: .whitespacesAndNewlines)
+            let characters = key.characters.trimmingCharacters(in: .whitespacesAndNewlines)
+            keyName = ignoringModifiers.isEmpty ? characters : ignoringModifiers
+        }
+        guard let keyName, !keyName.isEmpty else { return nil }
+        return KeyStroke(key: normalizedKey(keyName), modifiers: modifiers(for: press))
+    }
 
     static func parseList(_ text: String) -> [KeyStroke] {
         text
@@ -330,6 +545,19 @@ struct KeyStroke: Hashable {
         }
     }
 
+    private static func displayKey(_ value: String) -> String {
+        switch value {
+        case "backspace": "Backspace"
+        case "delete": "Delete"
+        case "escape": "Esc"
+        case "enter": "Enter"
+        case "space": "Space"
+        case "tab": "Tab"
+        default:
+            value.count == 1 ? value.uppercased() : value
+        }
+    }
+
     private static func keyNames(for press: UIPress) -> Set<String> {
         guard let key = press.key else { return [] }
         let specialKey: String?
@@ -373,6 +601,15 @@ struct KeyStroke: Hashable {
 }
 
 extension ShortcutModifier {
+    var shortcutDisplayName: String {
+        switch self {
+        case .shift: "Shift"
+        case .control: "Ctrl"
+        case .option: "Alt"
+        case .command: "Meta"
+        }
+    }
+
     init?(shortcutToken: String) {
         switch shortcutToken.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "ctrl", "control":
@@ -1568,10 +1805,12 @@ final class DatasetStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var statusMessage = "Disconnected"
     @Published var isLoading = false
+    @Published var isTestingConnection = false
     @Published var isSaving = false
     @Published var isDirty = false
     @Published var showsLabels = true
     @Published var fillsShapes = true
+    @AppStorage("polygonFillOpacity") var polygonFillOpacity = 0.20
     @Published var imageBrightness = ImageAdjustmentDefaults.neutral
     @Published var imageContrast = ImageAdjustmentDefaults.neutral
     @Published var keepsPreviousShapes = false
@@ -1652,8 +1891,17 @@ final class DatasetStore: ObservableObject {
         return shapes[0].label == shapes[1].label
     }
 
+    var canSubtractOverlappingPolygons: Bool {
+        selectedShapes.filter { $0.shapeType == .polygon && $0.points.count >= 3 }.count >= 2
+    }
+
     var hasImageAdjustment: Bool {
         !ImageAdjustmentState(brightness: imageBrightness, contrast: imageContrast).isNeutral
+    }
+
+    var currentDatasetDirectory: String {
+        let root = health?.datasetRoot.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return root.isEmpty ? "No dataset" : root
     }
 
     var recentLabels: [String] {
@@ -1691,6 +1939,24 @@ final class DatasetStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
             statusMessage = "Disconnected"
+        }
+    }
+
+    func testConnection() async {
+        guard let client else {
+            errorMessage = "Invalid server URL"
+            statusMessage = "Disconnected"
+            return
+        }
+        isTestingConnection = true
+        defer { isTestingConnection = false }
+        do {
+            let health = try await client.health()
+            self.health = health
+            statusMessage = "Server OK: \(health.imageCount) images / \(health.annotatedCount) annotated"
+        } catch {
+            errorMessage = error.localizedDescription
+            statusMessage = "Connection failed"
         }
     }
 
@@ -2064,6 +2330,20 @@ final class DatasetStore: ObservableObject {
         syncHistoryBaselineIfAnnotationUnchanged()
     }
 
+    func setShapeSelected(_ shape: LabelmeShape, selected: Bool) {
+        if selected {
+            selectedShapeIDs.insert(shape.id)
+            selectedShapeID = shape.id
+            currentLabel = shape.label
+        } else {
+            selectedShapeIDs.remove(shape.id)
+            if selectedShapeID == shape.id {
+                selectedShapeID = selectedShapeIDs.first
+            }
+        }
+        syncHistoryBaselineIfAnnotationUnchanged()
+    }
+
     func clearShapeSelection() {
         selectedShapeID = nil
         selectedShapeIDs.removeAll()
@@ -2092,23 +2372,41 @@ final class DatasetStore: ObservableObject {
     }
 
     func toggleSelectedShapeVisibility() {
-        let ids = selectedIDsForAction()
-        guard !ids.isEmpty else { return }
-        annotation?.shapes = annotation?.shapes.map { shape in
-            guard ids.contains(shape.id) else { return shape }
+        setSelectedShapeVisibility(nil)
+    }
+
+    func toggleShapeVisibility(id: UUID) {
+        guard var annotation else { return }
+        annotation.shapes = annotation.shapes.map { shape in
+            guard shape.id == id else { return shape }
             var updated = shape
             updated.isVisible.toggle()
             return updated
-        } ?? []
+        }
+        self.annotation = annotation
+    }
+
+    func setSelectedShapeVisibility(_ visible: Bool?) {
+        let ids = selectedIDsForAction()
+        guard !ids.isEmpty else { return }
+        guard var annotation else { return }
+        annotation.shapes = annotation.shapes.map { shape in
+            guard ids.contains(shape.id) else { return shape }
+            var updated = shape
+            updated.isVisible = visible ?? !shape.isVisible
+            return updated
+        }
+        self.annotation = annotation
     }
 
     func toggleAllShapesVisibility(_ visible: Bool?) {
-        guard annotation != nil else { return }
-        annotation?.shapes = annotation?.shapes.map { shape in
+        guard var annotation else { return }
+        annotation.shapes = annotation.shapes.map { shape in
             var next = shape
             next.isVisible = visible ?? !shape.isVisible
             return next
-        } ?? []
+        }
+        self.annotation = annotation
     }
 
     func moveShape(id: UUID, by delta: CGPoint) {
@@ -2175,6 +2473,28 @@ final class DatasetStore: ObservableObject {
             selectedShapeID = merged.id
             selectedShapeIDs = [merged.id]
             currentLabel = merged.label
+            markDirty()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func subtractOverlappingPolygons() {
+        guard var annotation else { return }
+        let selectedIDs = selectedIDsForAction()
+        guard selectedIDs.count >= 2 else {
+            errorMessage = "Select at least two polygons."
+            return
+        }
+        do {
+            let result = try LabelmePolygonOverlapResolver.subtractUpperLayers(
+                from: annotation.shapes,
+                limitedTo: selectedIDs
+            )
+            annotation.shapes = result
+            self.annotation = annotation
+            selectedShapeIDs = selectedIDs.intersection(Set(result.map(\.id)))
+            selectedShapeID = selectedShapeIDs.first
             markDirty()
         } catch {
             errorMessage = error.localizedDescription

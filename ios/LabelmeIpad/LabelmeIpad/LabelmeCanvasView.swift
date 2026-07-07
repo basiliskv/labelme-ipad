@@ -13,10 +13,12 @@ struct LabelmeCanvasView: View {
     @Binding var command: CanvasCommand?
     @Binding var showsLabels: Bool
     @Binding var fillsShapes: Bool
+    var polygonFillOpacity: Double
     var imageBrightness: Double
     var imageContrast: Double
     var isMultiSelectModifierPressed: Bool
     var isAddPointModifierPressed: Bool
+    var isPencilOnlyEditingEnabled: Bool
     @Binding var canUndoLastPoint: Bool
     var onEditingBegan: () -> Void
     var onEditingEnded: () -> Void
@@ -24,6 +26,10 @@ struct LabelmeCanvasView: View {
 
     @State private var zoom: CGFloat = 1
     @State private var magnificationStartZoom: CGFloat?
+    @State private var magnificationStartPan: CGSize = .zero
+    @State private var magnificationAnchorImagePoint: CGPoint?
+    @State private var magnificationAnchorScreenPoint: CGPoint?
+    @State private var fingerPanStartPan: CGSize = .zero
     @State private var pan: CGSize = .zero
     @State private var draftPoints: [CGPoint] = []
     @State private var dragStart: CGPoint?
@@ -38,8 +44,23 @@ struct LabelmeCanvasView: View {
         GeometryReader { proxy in
             ZStack(alignment: .bottom) {
                 canvas(proxy: proxy)
-                    .gesture(canvasGesture(size: proxy.size))
-                    .simultaneousGesture(zoomGesture())
+                    .overlay {
+                        CanvasInputOverlay(
+                            isPencilOnlyEditingEnabled: isPencilOnlyEditingEnabled,
+                            onEditChanged: { event in
+                                handleDragChanged(event, size: proxy.size)
+                            },
+                            onEditEnded: { event in
+                                handleDragEnded(event, size: proxy.size)
+                            },
+                            onFingerPan: { phase, translation in
+                                handleFingerPan(phase: phase, translation: translation)
+                            },
+                            onPinch: { phase, scale, location in
+                                handlePinch(phase: phase, scale: scale, location: location, size: proxy.size)
+                            }
+                        )
+                    }
 
                 if !draftPoints.isEmpty {
                     draftBar
@@ -202,7 +223,7 @@ struct LabelmeCanvasView: View {
     }
 
     private func draw(shape: LabelmeShape, selected: Bool, transform: CanvasTransform, context: inout GraphicsContext) {
-        let palette = ShapePalette(label: shape.label, selected: selected)
+        let palette = ShapePalette(label: shape.label, selected: selected, fillOpacity: polygonFillOpacity)
         let path = renderPath(for: shape, transform: transform)
 
         if fillsShapes, shape.shapeType.fillsInterior {
@@ -315,31 +336,71 @@ struct LabelmeCanvasView: View {
         return path
     }
 
-    private func canvasGesture(size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { value in
-                handleDragChanged(value, size: size)
-            }
-            .onEnded { value in
-                handleDragEnded(value, size: size)
-            }
+    private func panKeeping(imagePoint: CGPoint, at screenPoint: CGPoint, zoom: CGFloat, viewSize: CGSize) -> CGSize {
+        let transform = CanvasTransform(viewSize: viewSize, imageSize: imageSize, zoom: zoom, pan: .zero)
+        let displaySize = CGSize(width: imageSize.width * transform.scale, height: imageSize.height * transform.scale)
+        let centeredOrigin = CGPoint(
+            x: (viewSize.width - displaySize.width) / 2,
+            y: (viewSize.height - displaySize.height) / 2
+        )
+        let desiredOrigin = CGPoint(
+            x: screenPoint.x - imagePoint.x * transform.scale,
+            y: screenPoint.y - imagePoint.y * transform.scale
+        )
+        return CGSize(
+            width: desiredOrigin.x - centeredOrigin.x,
+            height: desiredOrigin.y - centeredOrigin.y
+        )
     }
 
-    private func zoomGesture() -> some Gesture {
-        MagnificationGesture()
-            .onChanged { value in
-                let base = magnificationStartZoom ?? zoom
-                if magnificationStartZoom == nil {
-                    magnificationStartZoom = zoom
-                }
-                zoom = min(max(value * base, 0.2), 8)
-            }
-            .onEnded { _ in
-                magnificationStartZoom = nil
-            }
+    private func handlePinch(phase: UIGestureRecognizer.State, scale: CGFloat, location: CGPoint, size: CGSize) {
+        switch phase {
+        case .began:
+            magnificationStartZoom = zoom
+            magnificationStartPan = pan
+            let transform = CanvasTransform(viewSize: size, imageSize: imageSize, zoom: zoom, pan: pan)
+            magnificationAnchorImagePoint = transform.imagePoint(location)
+            magnificationAnchorScreenPoint = location
+        case .changed:
+            guard let startZoom = magnificationStartZoom,
+                  let anchorImagePoint = magnificationAnchorImagePoint,
+                  let anchorScreenPoint = magnificationAnchorScreenPoint
+            else { return }
+
+            let nextZoom = min(max(startZoom * scale, 0.2), 8)
+            zoom = nextZoom
+            pan = panKeeping(
+                imagePoint: anchorImagePoint,
+                at: anchorScreenPoint,
+                zoom: nextZoom,
+                viewSize: size
+            )
+        case .ended, .cancelled, .failed:
+            magnificationStartZoom = nil
+            magnificationAnchorImagePoint = nil
+            magnificationAnchorScreenPoint = nil
+        default:
+            break
+        }
     }
 
-    private func handleDragChanged(_ value: DragGesture.Value, size: CGSize) {
+    private func handleFingerPan(phase: UIGestureRecognizer.State, translation: CGPoint) {
+        guard isPencilOnlyEditingEnabled else { return }
+
+        switch phase {
+        case .began:
+            fingerPanStartPan = pan
+        case .changed:
+            pan = CGSize(
+                width: fingerPanStartPan.width + translation.x,
+                height: fingerPanStartPan.height + translation.y
+            )
+        default:
+            break
+        }
+    }
+
+    private func handleDragChanged(_ value: CanvasTouchEvent, size: CGSize) {
         let transform = CanvasTransform(viewSize: size, imageSize: imageSize, zoom: zoom, pan: pan)
         let imagePoint = transform.imagePoint(value.location)
 
@@ -360,6 +421,11 @@ struct LabelmeCanvasView: View {
             case .vertex(let shapeID, let vertexIndex):
                 updateVertex(shapeID: shapeID, vertexIndex: vertexIndex, to: imagePoint)
             case .shape(let shapeID):
+                guard isIntentionalShapeMove(value) else {
+                    lastDragImagePoint = imagePoint
+                    lastDragScreenPoint = value.location
+                    return
+                }
                 moveShape(shapeID: shapeID, by: delta)
             case .selectionToggle:
                 break
@@ -382,7 +448,11 @@ struct LabelmeCanvasView: View {
         }
     }
 
-    private func handleDragEnded(_ value: DragGesture.Value, size: CGSize) {
+    private func isIntentionalShapeMove(_ value: CanvasTouchEvent) -> Bool {
+        hypot(value.translation.width, value.translation.height) >= 14
+    }
+
+    private func handleDragEnded(_ value: CanvasTouchEvent, size: CGSize) {
         let transform = CanvasTransform(viewSize: size, imageSize: imageSize, zoom: zoom, pan: pan)
         let imagePoint = transform.imagePoint(value.location)
         let didDrag = abs(value.translation.width) > 4 || abs(value.translation.height) > 4
@@ -707,6 +777,167 @@ private enum DragTarget: Equatable {
     }
 }
 
+private struct CanvasTouchEvent {
+    let location: CGPoint
+    let translation: CGSize
+}
+
+private struct CanvasInputOverlay: UIViewRepresentable {
+    let isPencilOnlyEditingEnabled: Bool
+    let onEditChanged: (CanvasTouchEvent) -> Void
+    let onEditEnded: (CanvasTouchEvent) -> Void
+    let onFingerPan: (_ phase: UIGestureRecognizer.State, _ translation: CGPoint) -> Void
+    let onPinch: (_ phase: UIGestureRecognizer.State, _ scale: CGFloat, _ location: CGPoint) -> Void
+
+    func makeUIView(context: Context) -> InputView {
+        let view = InputView()
+        view.coordinator = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ uiView: InputView, context: Context) {
+        context.coordinator.isPencilOnlyEditingEnabled = isPencilOnlyEditingEnabled
+        context.coordinator.onEditChanged = onEditChanged
+        context.coordinator.onEditEnded = onEditEnded
+        context.coordinator.onFingerPan = onFingerPan
+        context.coordinator.onPinch = onPinch
+        uiView.coordinator = context.coordinator
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            isPencilOnlyEditingEnabled: isPencilOnlyEditingEnabled,
+            onEditChanged: onEditChanged,
+            onEditEnded: onEditEnded,
+            onFingerPan: onFingerPan,
+            onPinch: onPinch
+        )
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var isPencilOnlyEditingEnabled: Bool
+        var onEditChanged: (CanvasTouchEvent) -> Void
+        var onEditEnded: (CanvasTouchEvent) -> Void
+        var onFingerPan: (_ phase: UIGestureRecognizer.State, _ translation: CGPoint) -> Void
+        var onPinch: (_ phase: UIGestureRecognizer.State, _ scale: CGFloat, _ location: CGPoint) -> Void
+
+        init(
+            isPencilOnlyEditingEnabled: Bool,
+            onEditChanged: @escaping (CanvasTouchEvent) -> Void,
+            onEditEnded: @escaping (CanvasTouchEvent) -> Void,
+            onFingerPan: @escaping (_ phase: UIGestureRecognizer.State, _ translation: CGPoint) -> Void,
+            onPinch: @escaping (_ phase: UIGestureRecognizer.State, _ scale: CGFloat, _ location: CGPoint) -> Void
+        ) {
+            self.isPencilOnlyEditingEnabled = isPencilOnlyEditingEnabled
+            self.onEditChanged = onEditChanged
+            self.onEditEnded = onEditEnded
+            self.onFingerPan = onFingerPan
+            self.onPinch = onPinch
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
+    }
+
+    final class InputView: UIView {
+        weak var coordinator: Coordinator? {
+            didSet {
+                pinchRecognizer.delegate = coordinator
+                fingerPanRecognizer.delegate = coordinator
+            }
+        }
+
+        private var activeEditTouch: UITouch?
+        private var editStartLocation: CGPoint = .zero
+        private lazy var pinchRecognizer: UIPinchGestureRecognizer = {
+            let recognizer = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+            recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            recognizer.cancelsTouchesInView = false
+            return recognizer
+        }()
+        private lazy var fingerPanRecognizer: UIPanGestureRecognizer = {
+            let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handleFingerPan(_:)))
+            recognizer.minimumNumberOfTouches = 1
+            recognizer.maximumNumberOfTouches = 1
+            recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            recognizer.cancelsTouchesInView = false
+            return recognizer
+        }()
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            backgroundColor = .clear
+            isMultipleTouchEnabled = true
+            addGestureRecognizer(pinchRecognizer)
+            addGestureRecognizer(fingerPanRecognizer)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard (event?.allTouches?.count ?? touches.count) == 1 else { return }
+            guard activeEditTouch == nil,
+                  let touch = touches.first(where: shouldUseForEditing)
+            else { return }
+
+            activeEditTouch = touch
+            editStartLocation = touch.location(in: self)
+            let canvasEvent = CanvasTouchEvent(location: editStartLocation, translation: .zero)
+            coordinator?.onEditChanged(canvasEvent)
+        }
+
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let touch = activeEditTouch, touches.contains(touch) else { return }
+            let location = touch.location(in: self)
+            coordinator?.onEditChanged(
+                CanvasTouchEvent(
+                    location: location,
+                    translation: CGSize(width: location.x - editStartLocation.x, height: location.y - editStartLocation.y)
+                )
+            )
+        }
+
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+            finishEditTouch(from: touches)
+        }
+
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+            finishEditTouch(from: touches)
+        }
+
+        private func shouldUseForEditing(_ touch: UITouch) -> Bool {
+            guard let coordinator else { return false }
+            if touch.type == .pencil {
+                return true
+            }
+            return !coordinator.isPencilOnlyEditingEnabled && touch.type == .direct
+        }
+
+        private func finishEditTouch(from touches: Set<UITouch>) {
+            guard let touch = activeEditTouch, touches.contains(touch) else { return }
+            let location = touch.location(in: self)
+            coordinator?.onEditEnded(
+                CanvasTouchEvent(
+                    location: location,
+                    translation: CGSize(width: location.x - editStartLocation.x, height: location.y - editStartLocation.y)
+                )
+            )
+            activeEditTouch = nil
+        }
+
+        @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+            coordinator?.onPinch(recognizer.state, recognizer.scale, recognizer.location(in: self))
+        }
+
+        @objc private func handleFingerPan(_ recognizer: UIPanGestureRecognizer) {
+            coordinator?.onFingerPan(recognizer.state, recognizer.translation(in: self))
+        }
+    }
+}
+
 private enum ImageAdjustmentRenderer {
     private static let context = CIContext()
 
@@ -794,14 +1025,15 @@ private struct ShapePalette {
     let stroke: Color
     let fill: Color
 
-    init(label: String, selected: Bool) {
+    init(label: String, selected: Bool, fillOpacity: Double) {
         let base = Color.labelmeColor(for: label)
+        let opacity = min(max(fillOpacity, 0), 0.75)
         if selected {
             stroke = .white
-            fill = base.opacity(0.34)
+            fill = base.opacity(min(opacity + 0.14, 0.85))
         } else {
             stroke = base
-            fill = base.opacity(0.20)
+            fill = base.opacity(opacity)
         }
     }
 }

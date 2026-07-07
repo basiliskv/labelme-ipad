@@ -6,6 +6,7 @@ struct ContentView: View {
     @StateObject private var store = DatasetStore()
     @AppStorage("multiSelectModifier") private var multiSelectModifierRaw = ShortcutModifier.shift.rawValue
     @AppStorage("addPointModifier") private var addPointModifierRaw = ShortcutModifier.option.rawValue
+    @AppStorage("pencilOnlyEditing") private var pencilOnlyEditing = true
     @AppStorage("keyboardShortcutOverrides") private var keyboardShortcutOverrides = ShortcutRegistry.defaultJSON()
     @State private var serverDraft = ""
     @State private var cloudflareAccessClientIdDraft = ""
@@ -13,8 +14,8 @@ struct ContentView: View {
     @State private var canvasCommand: CanvasCommand?
     @State private var showsFileList = true
     @State private var showsInspector = true
-    @State private var showsShortcutSettings = false
-    @State private var showsCloudflareAccessSettings = false
+    @State private var showsSettings = false
+    @State private var showsBrightnessContrast = false
     @State private var localDatasetPickerMode: LocalDatasetPickerMode?
     @State private var canUndoLastPoint = false
     @State private var labelFocusRequest = 0
@@ -39,7 +40,8 @@ struct ContentView: View {
                         canvasCommand: $canvasCommand,
                         showsFileList: $showsFileList,
                         showsInspector: $showsInspector,
-                        onShowShortcutSettings: { showsShortcutSettings = true }
+                        showsBrightnessContrast: $showsBrightnessContrast,
+                        onShowSettings: { showsSettings = true }
                     )
                     Divider()
                     editorSurface
@@ -77,13 +79,33 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "")
         }
-        .sheet(isPresented: $showsShortcutSettings) {
-            ShortcutSettingsView(
+        .sheet(isPresented: $showsSettings) {
+            AppSettingsView(
+                store: store,
+                serverURL: $serverDraft,
+                clientId: $cloudflareAccessClientIdDraft,
+                clientSecret: $cloudflareAccessClientSecretDraft,
                 multiSelectModifierRaw: $multiSelectModifierRaw,
                 addPointModifierRaw: $addPointModifierRaw,
-                keyboardShortcutOverrides: $keyboardShortcutOverrides
+                pencilOnlyEditing: $pencilOnlyEditing,
+                keyboardShortcutOverrides: $keyboardShortcutOverrides,
+                onTest: testServer,
+                onConnect: openServer,
+                onClearAccess: clearCloudflareAccessSettings,
+                onOpenDocuments: {
+                    Task { await store.openAppDocumentsDataset() }
+                    showsSettings = false
+                },
+                onOpenZip: {
+                    localDatasetPickerMode = .openZip
+                    showsSettings = false
+                },
+                onOpenFolder: {
+                    localDatasetPickerMode = .openFolder
+                    showsSettings = false
+                }
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.large])
         }
         .fullScreenCover(item: $localDatasetPickerMode) { mode in
             LocalDatasetPicker(mode: mode) { url in
@@ -115,93 +137,20 @@ struct ContentView: View {
             Text("Labelme")
                 .font(.subheadline.weight(.semibold))
 
-            TextField("http://192.168.1.10:8765", text: $serverDraft)
-                .textFieldStyle(.roundedBorder)
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.caption.monospaced())
-                .frame(maxWidth: 300)
-
             Button {
-                cloudflareAccessClientIdDraft = store.cloudflareAccessClientId
-                cloudflareAccessClientSecretDraft = store.cloudflareAccessClientSecret
-                showsCloudflareAccessSettings = true
-            } label: {
-                Text("CF")
-                    .font(.caption.weight(.semibold))
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(store.cloudflareAccessClientId.isEmpty || store.cloudflareAccessClientSecret.isEmpty ? .secondary : .green)
-            .popover(isPresented: $showsCloudflareAccessSettings) {
-                CloudflareAccessSettingsView(
-                    clientId: $cloudflareAccessClientIdDraft,
-                    clientSecret: $cloudflareAccessClientSecretDraft,
-                    onSave: {
-                        saveCloudflareAccessSettings()
-                        showsCloudflareAccessSettings = false
-                    },
-                    onClear: {
-                        cloudflareAccessClientIdDraft = ""
-                        cloudflareAccessClientSecretDraft = ""
-                        saveCloudflareAccessSettings()
-                        showsCloudflareAccessSettings = false
-                    }
-                )
-                .frame(width: 420)
-                .presentationCompactAdaptation(.popover)
-            }
-
-            Button {
-                Task { await store.openAppDocumentsDataset() }
+                refreshConnectionDrafts()
+                showsSettings = true
             } label: {
                 Label {
-                    Text("Docs")
+                    Text("Settings")
                 } icon: {
-                    LabelmeIconView(icon: .fileList, size: 15)
+                    LabelmeIconView(icon: .info, size: 15)
                 }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
 
-            Button {
-                localDatasetPickerMode = .openZip
-            } label: {
-                Label {
-                    Text("Zip")
-                } icon: {
-                    LabelmeIconView(icon: .copy, size: 15)
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-
-            Button {
-                localDatasetPickerMode = .openFolder
-            } label: {
-                Label {
-                    Text("Files")
-                } icon: {
-                    LabelmeIconView(icon: .folderOpen, size: 15)
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-
-            Button {
-                openServer()
-            } label: {
-                Label {
-                    Text("Open")
-                } icon: {
-                    LabelmeIconView(icon: .folderOpen, size: 15)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-
-            if store.isLoading {
+            if store.isLoading || store.isTestingConnection {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -212,6 +161,13 @@ struct ContentView: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+
+            Text(store.currentDatasetDirectory)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 320, alignment: .trailing)
 
             if store.isDirty {
                 Text("Modified")
@@ -235,6 +191,12 @@ struct ContentView: View {
             openServer()
         case .openDir:
             localDatasetPickerMode = .openFolder
+        case .openZip:
+            localDatasetPickerMode = .openZip
+        case .openDocumentsDataset:
+            Task { await store.openAppDocumentsDataset() }
+        case .showSettings:
+            showsSettings = true
         case .quit, .saveAs, .saveTo, .deleteFile, .createOrientedRectangle:
             store.reportUnsupportedShortcut(action)
         case .save:
@@ -267,6 +229,10 @@ struct ContentView: View {
             store.tool = .linestrip
         case .editShape:
             store.tool = .edit
+        case .selectAllShapes:
+            store.selectAllShapes()
+        case .clearShapeSelection:
+            store.clearShapeSelection()
         case .deleteShape:
             store.deleteSelectedShape()
         case .duplicateShape:
@@ -275,6 +241,22 @@ struct ContentView: View {
             store.copySelectedShape()
         case .pasteShape:
             store.pasteShapes()
+        case .connectPolygons:
+            store.connectSelectedPolygons()
+        case .subtractOverlap:
+            store.subtractOverlappingPolygons()
+        case .changeSelectedToPolygon:
+            store.updateSelectedShapeType(.polygon)
+        case .changeSelectedToRectangle:
+            store.updateSelectedShapeType(.rectangle)
+        case .changeSelectedToCircle:
+            store.updateSelectedShapeType(.circle)
+        case .changeSelectedToLine:
+            store.updateSelectedShapeType(.line)
+        case .changeSelectedToPoint:
+            store.updateSelectedShapeType(.point)
+        case .changeSelectedToLinestrip:
+            store.updateSelectedShapeType(.linestrip)
         case .undo:
             if canUndoLastPoint {
                 canvasCommand = .undoLastPoint
@@ -296,6 +278,26 @@ struct ContentView: View {
             store.toggleAllShapesVisibility(false)
         case .toggleAllShapes:
             store.toggleAllShapesVisibility(nil)
+        case .showSelectedShapes:
+            store.setSelectedShapeVisibility(true)
+        case .hideSelectedShapes:
+            store.setSelectedShapeVisibility(false)
+        case .toggleSelectedShapes:
+            store.toggleSelectedShapeVisibility()
+        case .toggleLabels:
+            store.showsLabels.toggle()
+        case .toggleFillPolygons:
+            store.fillsShapes.toggle()
+        case .toggleFileList:
+            showsFileList.toggle()
+        case .toggleLabelPanel:
+            showsInspector.toggle()
+        case .showBrightnessContrast:
+            if store.image != nil {
+                showsBrightnessContrast = true
+            }
+        case .resetBrightnessContrast:
+            store.resetImageAdjustment()
         case .redo:
             store.redo()
         }
@@ -307,9 +309,27 @@ struct ContentView: View {
         Task { await store.connect() }
     }
 
+    private func testServer() {
+        store.serverBaseURL = serverDraft
+        saveCloudflareAccessSettings()
+        Task { await store.testConnection() }
+    }
+
     private func saveCloudflareAccessSettings() {
         store.cloudflareAccessClientId = cloudflareAccessClientIdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         store.cloudflareAccessClientSecret = cloudflareAccessClientSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func clearCloudflareAccessSettings() {
+        cloudflareAccessClientIdDraft = ""
+        cloudflareAccessClientSecretDraft = ""
+        saveCloudflareAccessSettings()
+    }
+
+    private func refreshConnectionDrafts() {
+        serverDraft = store.serverBaseURL
+        cloudflareAccessClientIdDraft = store.cloudflareAccessClientId
+        cloudflareAccessClientSecretDraft = store.cloudflareAccessClientSecret
     }
 
     private func openLocalDataset(_ url: URL, mode: LocalDatasetPickerMode) {
@@ -336,10 +356,12 @@ struct ContentView: View {
                 command: $canvasCommand,
                 showsLabels: $store.showsLabels,
                 fillsShapes: $store.fillsShapes,
+                polygonFillOpacity: store.polygonFillOpacity,
                 imageBrightness: store.imageBrightness,
                 imageContrast: store.imageContrast,
                 isMultiSelectModifierPressed: isMultiSelectModifierPressed,
                 isAddPointModifierPressed: isAddPointModifierPressed,
+                isPencilOnlyEditingEnabled: pencilOnlyEditing,
                 canUndoLastPoint: $canUndoLastPoint,
                 onEditingBegan: store.beginUndoGrouping,
                 onEditingEnded: store.endUndoGrouping,
@@ -448,47 +470,528 @@ private struct LocalDatasetPicker: UIViewControllerRepresentable {
     }
 }
 
-private struct CloudflareAccessSettingsView: View {
-    @Binding var clientId: String
-    @Binding var clientSecret: String
-    let onSave: () -> Void
-    let onClear: () -> Void
+private enum SettingsCategory: String, CaseIterable, Identifiable {
+    case general
+    case connection
+    case dataset
+    case view
+    case shortcuts
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "よく使う"
+        case .connection: "接続設定"
+        case .dataset: "データセット"
+        case .view: "表示設定"
+        case .shortcuts: "ショートカット"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: "gearshape"
+        case .connection: "network"
+        case .dataset: "folder"
+        case .view: "eye"
+        case .shortcuts: "keyboard"
+        }
+    }
+}
+
+private struct SettingsGroup<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text("CF Access")
-                    .font(.callout.weight(.semibold))
-                Spacer()
-                Button("Clear", role: .destructive) {
-                    onClear()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
 
-                Button("Save") {
-                    onSave()
+            VStack(alignment: .leading, spacing: 10) {
+                content
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+}
+
+private struct SliderRow: View {
+    let title: String
+    @Binding var value: Double
+    var range = ImageAdjustmentDefaults.range
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .frame(width: 88, alignment: .leading)
+            Slider(value: $value, in: range, step: 0.01)
+            Text(value, format: .number.precision(.fractionLength(2)))
+                .font(.caption.monospacedDigit())
+                .frame(width: 42, alignment: .trailing)
+        }
+    }
+}
+
+private struct AppSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: DatasetStore
+    @Binding var serverURL: String
+    @Binding var clientId: String
+    @Binding var clientSecret: String
+    @Binding var multiSelectModifierRaw: String
+    @Binding var addPointModifierRaw: String
+    @Binding var pencilOnlyEditing: Bool
+    @Binding var keyboardShortcutOverrides: String
+    @State private var recordingAction: ShortcutAction?
+    @State private var selectedCategory = SettingsCategory.general
+    @State private var pendingShortcutConflict: PendingShortcutConflict?
+    let onTest: () -> Void
+    let onConnect: () -> Void
+    let onClearAccess: () -> Void
+    let onOpenDocuments: () -> Void
+    let onOpenZip: () -> Void
+    let onOpenFolder: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                settingsSidebar
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    settingsHeader
+                    Divider()
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            settingsContent
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+            }
+            .overlay {
+                if let recordingAction {
+                    ShortcutCaptureOverlay(
+                        action: recordingAction,
+                        onCancel: { self.recordingAction = nil },
+                        onCapture: { keyStroke in
+                            requestSetShortcut(keyStroke.shortcutText, for: recordingAction)
+                            self.recordingAction = nil
+                        }
+                    )
+                }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("閉じる") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+
+                Button("変更を保存") {
+                    onConnect()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.isTestingConnection || store.isLoading)
+            }
+            .padding(12)
+            .background(Color(.systemBackground))
+        }
+        .frame(minWidth: 760, minHeight: 560)
+        .background(Color(.systemGroupedBackground))
+        .alert(
+            "ショートカットが重複しています",
+            isPresented: Binding(
+                get: { pendingShortcutConflict != nil },
+                set: { if !$0 { pendingShortcutConflict = nil } }
+            )
+        ) {
+            Button("キャンセル", role: .cancel) {
+                pendingShortcutConflict = nil
+            }
+            Button("続行して置き換える", role: .destructive) {
+                guard let pendingShortcutConflict else { return }
+                applyShortcutResolvingConflicts(
+                    pendingShortcutConflict.shortcutText,
+                    for: pendingShortcutConflict.action
+                )
+                self.pendingShortcutConflict = nil
+            }
+        } message: {
+            Text(pendingShortcutConflict?.message ?? "")
+        }
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("環境設定")
+                .font(.headline)
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+
+            ForEach(SettingsCategory.allCases) { category in
+                Button {
+                    selectedCategory = category
+                } label: {
+                    Label(category.title, systemImage: category.systemImage)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 9)
+                        .background(
+                            selectedCategory == category ? Color(.tertiarySystemFill) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .frame(width: 190)
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+
+    private var settingsHeader: some View {
+        HStack {
+            Label(selectedCategory.title, systemImage: selectedCategory.systemImage)
+                .font(.headline)
+            Spacer()
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Color(.tertiarySystemFill), in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 48)
+        .background(Color(.systemBackground))
+    }
+
+    @ViewBuilder
+    private var settingsContent: some View {
+        switch selectedCategory {
+        case .general:
+            generalSettings
+        case .connection:
+            connectionSettings
+        case .dataset:
+            datasetSettings
+        case .view:
+            viewSettings
+        case .shortcuts:
+            shortcutSettings
+        }
+    }
+
+    private var generalSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsGroup(title: "よく使う") {
+                settingsStatusRows
+                Divider()
+                Button {
+                    onTest()
+                } label: {
+                    Label("接続テスト", systemImage: "network")
+                }
+                .disabled(store.isTestingConnection || store.isLoading)
+
+                Button {
+                    onConnect()
+                    dismiss()
+                } label: {
+                    Label("サーバーへ接続", systemImage: "checkmark.circle")
+                }
+                .disabled(store.isTestingConnection || store.isLoading)
+            }
+
+            SettingsGroup(title: "表示") {
+                Toggle("ラベル名を表示", isOn: $store.showsLabels)
+                Toggle("ポリゴンを塗りつぶす", isOn: $store.fillsShapes)
+                SliderRow(
+                    title: "塗り濃さ",
+                    value: Binding(
+                        get: { store.polygonFillOpacity },
+                        set: { store.polygonFillOpacity = min(max($0, 0), 0.75) }
+                    ),
+                    range: 0...0.75
+                )
+                .disabled(!store.fillsShapes)
+                Toggle("Apple Pencil のみで編集", isOn: $pencilOnlyEditing)
+            }
+        }
+    }
+
+    private var connectionSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsGroup(title: "サーバー") {
+                TextField("https://labelme.example.com", text: $serverURL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.caption.monospaced())
+                settingsStatusRows
+            }
+
+            SettingsGroup(title: "Cloudflare Access") {
                 TextField("CF-Access-Client-Id", text: $clientId)
-                    .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.caption.monospaced())
 
                 SecureField("CF-Access-Client-Secret", text: $clientSecret)
-                    .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.caption.monospaced())
                     .privacySensitive()
+
+                Button("Access Token を消去", role: .destructive) {
+                    onClearAccess()
+                }
+                .disabled(clientId.isEmpty && clientSecret.isEmpty)
+            }
+
+            SettingsGroup(title: "接続操作") {
+                Button {
+                    onTest()
+                } label: {
+                    Label("接続テスト", systemImage: "network")
+                }
+                .disabled(store.isTestingConnection || store.isLoading)
+
+                Button {
+                    onConnect()
+                    dismiss()
+                } label: {
+                    Label("サーバーへ接続", systemImage: "checkmark.circle")
+                }
+                .disabled(store.isTestingConnection || store.isLoading)
             }
         }
-        .padding(12)
+    }
+
+    private var datasetSettings: some View {
+        SettingsGroup(title: "ローカルデータセット") {
+            settingsStatusRows
+            Divider()
+            Button {
+                onOpenDocuments()
+            } label: {
+                Label("アプリ内 Documents を開く", systemImage: "doc.text.magnifyingglass")
+            }
+
+            Button {
+                onOpenZip()
+            } label: {
+                Label("Zip を読み込む", systemImage: "doc.zipper")
+            }
+
+            Button {
+                onOpenFolder()
+            } label: {
+                Label("Files からフォルダを開く", systemImage: "folder")
+            }
+        }
+    }
+
+    private var viewSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsGroup(title: "キャンバス表示") {
+                Toggle("ラベル名を表示", isOn: $store.showsLabels)
+                Toggle("ポリゴンを塗りつぶす", isOn: $store.fillsShapes)
+                SliderRow(
+                    title: "塗り濃さ",
+                    value: Binding(
+                        get: { store.polygonFillOpacity },
+                        set: { store.polygonFillOpacity = min(max($0, 0), 0.75) }
+                    ),
+                    range: 0...0.75
+                )
+                .disabled(!store.fillsShapes)
+                Toggle("Apple Pencil のみでポリゴン作成・編集", isOn: $pencilOnlyEditing)
+                Button {
+                    store.toggleAllShapesVisibility(true)
+                } label: {
+                    Label("すべての図形を表示", systemImage: "eye")
+                }
+                Button {
+                    store.toggleAllShapesVisibility(false)
+                } label: {
+                    Label("すべての図形を非表示", systemImage: "eye.slash")
+                }
+            }
+
+            SettingsGroup(title: "画像調整") {
+                SliderRow(title: "明るさ", value: Binding(get: { store.imageBrightness }, set: { store.setImageBrightness($0) }))
+                SliderRow(title: "コントラスト", value: Binding(get: { store.imageContrast }, set: { store.setImageContrast($0) }))
+                Button("初期値に戻す") {
+                    store.resetImageAdjustment()
+                }
+            }
+        }
+    }
+
+    private var shortcutSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsGroup(title: "修飾キー") {
+                Picker("複数選択", selection: modifierBinding($multiSelectModifierRaw, default: .shift)) {
+                    ForEach(ShortcutModifier.allCases) { modifier in
+                        Text(modifier.title).tag(modifier.rawValue)
+                    }
+                }
+
+                Picker("辺に点を追加", selection: modifierBinding($addPointModifierRaw, default: .option)) {
+                    ForEach(ShortcutModifier.allCases) { modifier in
+                        Text(modifier.title).tag(modifier.rawValue)
+                    }
+                }
+            }
+
+            ForEach(shortcutSections, id: \.self) { section in
+                SettingsGroup(title: section) {
+                    ForEach(actions(in: section)) { action in
+                        ShortcutCaptureRow(
+                            action: action,
+                            shortcutText: shortcutText(for: action),
+                            isRecording: recordingAction == action,
+                            onRecord: { recordingAction = action },
+                            onClear: { setShortcut("", for: action) },
+                            onReset: { requestSetShortcut(action.defaultShortcutText, for: action) }
+                        )
+                        if action.id != actions(in: section).last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+
+            Button("ショートカットを初期値に戻す", role: .destructive) {
+                multiSelectModifierRaw = ShortcutModifier.shift.rawValue
+                addPointModifierRaw = ShortcutModifier.option.rawValue
+                keyboardShortcutOverrides = ShortcutRegistry.defaultJSON()
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder
+    private var settingsStatusRows: some View {
+        LabeledContent("状態") {
+            HStack(spacing: 8) {
+                if store.isTestingConnection || store.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(store.statusMessage)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+
+        LabeledContent("データセット") {
+            Text(store.currentDatasetDirectory)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func modifierBinding(_ binding: Binding<String>, default defaultModifier: ShortcutModifier) -> Binding<String> {
+        Binding(
+            get: {
+                ShortcutModifier(rawValue: binding.wrappedValue)?.rawValue ?? defaultModifier.rawValue
+            },
+            set: { newValue in
+                binding.wrappedValue = ShortcutModifier(rawValue: newValue)?.rawValue ?? defaultModifier.rawValue
+            }
+        )
+    }
+
+    private var shortcutSections: [String] {
+        ShortcutAction.allCases.reduce(into: [String]()) { sections, action in
+            if !sections.contains(action.section) {
+                sections.append(action.section)
+            }
+        }
+    }
+
+    private func actions(in section: String) -> [ShortcutAction] {
+        ShortcutAction.allCases.filter { $0.section == section }
+    }
+
+    private func shortcutText(for action: ShortcutAction) -> String {
+        ShortcutRegistry(json: keyboardShortcutOverrides).shortcutText(for: action)
+    }
+
+    private func setShortcut(_ shortcutText: String, for action: ShortcutAction) {
+        keyboardShortcutOverrides = ShortcutRegistry.json(
+            updating: keyboardShortcutOverrides,
+            action: action,
+            shortcutText: shortcutText
+        )
+    }
+
+    private func requestSetShortcut(_ shortcutText: String, for action: ShortcutAction) {
+        let conflicts = ShortcutRegistry(json: keyboardShortcutOverrides).conflicts(
+            for: action,
+            shortcutText: shortcutText
+        )
+        if conflicts.isEmpty {
+            setShortcut(shortcutText, for: action)
+        } else {
+            pendingShortcutConflict = PendingShortcutConflict(
+                action: action,
+                shortcutText: shortcutText,
+                conflicts: conflicts
+            )
+        }
+    }
+
+    private func applyShortcutResolvingConflicts(_ shortcutText: String, for action: ShortcutAction) {
+        keyboardShortcutOverrides = ShortcutRegistry.jsonResolvingConflicts(
+            updating: keyboardShortcutOverrides,
+            action: action,
+            shortcutText: shortcutText
+        )
+    }
+}
+
+private struct PendingShortcutConflict {
+    let action: ShortcutAction
+    let shortcutText: String
+    let conflicts: [ShortcutConflict]
+
+    var message: String {
+        let target = shortcutText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未設定" : shortcutText
+        let conflictText = conflicts
+            .map { "\($0.shortcutText): \($0.action.title)" }
+            .joined(separator: "\n")
+        return "\(target) はすでに次の機能で使われています。\n\n\(conflictText)\n\n続行すると、既存側から重複しているショートカットを削除して、この機能に割り当てます。"
     }
 }
 
@@ -497,8 +1000,8 @@ private struct LabelmeToolbar: View {
     @Binding var canvasCommand: CanvasCommand?
     @Binding var showsFileList: Bool
     @Binding var showsInspector: Bool
-    @State private var showsBrightnessContrast = false
-    let onShowShortcutSettings: () -> Void
+    @Binding var showsBrightnessContrast: Bool
+    let onShowSettings: () -> Void
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -511,8 +1014,8 @@ private struct LabelmeToolbar: View {
                     showsInspector.toggle()
                 }
 
-                ToolButton(title: "Keys", icon: .info, isSelected: false) {
-                    onShowShortcutSettings()
+                ToolButton(title: "Settings", icon: .info, isSelected: false) {
+                    onShowSettings()
                 }
 
                 toolbarDivider
@@ -585,6 +1088,10 @@ private struct LabelmeToolbar: View {
                     store.connectSelectedPolygons()
                 }
                 .disabled(!store.canConnectSelectedPolygons)
+                ToolButton(title: "Subtract\nOverlap", icon: .paintBucket, isSelected: false) {
+                    store.subtractOverlappingPolygons()
+                }
+                .disabled(!store.canSubtractOverlappingPolygons)
 
                 toolbarDivider
 
@@ -733,6 +1240,7 @@ private struct ShortcutSettingsView: View {
     @Binding var multiSelectModifierRaw: String
     @Binding var addPointModifierRaw: String
     @Binding var keyboardShortcutOverrides: String
+    @State private var recordingAction: ShortcutAction?
 
     var body: some View {
         NavigationStack {
@@ -754,12 +1262,28 @@ private struct ShortcutSettingsView: View {
                 ForEach(shortcutSections, id: \.self) { section in
                     Section(section) {
                         ForEach(actions(in: section)) { action in
-                            TextField(action.title, text: shortcutBinding(for: action), prompt: Text(action.placeholderShortcutText))
-                                .font(.caption.monospaced())
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
+                            ShortcutCaptureRow(
+                                action: action,
+                                shortcutText: shortcutText(for: action),
+                                isRecording: recordingAction == action,
+                                onRecord: { recordingAction = action },
+                                onClear: { setShortcut("", for: action) },
+                                onReset: { setShortcut(action.defaultShortcutText, for: action) }
+                            )
                         }
                     }
+                }
+            }
+            .overlay {
+                if let recordingAction {
+                    ShortcutCaptureOverlay(
+                        action: recordingAction,
+                        onCancel: { self.recordingAction = nil },
+                        onCapture: { keyStroke in
+                            setShortcut(keyStroke.shortcutText, for: recordingAction)
+                            self.recordingAction = nil
+                        }
+                    )
                 }
             }
             .navigationTitle("Keys")
@@ -801,19 +1325,173 @@ private struct ShortcutSettingsView: View {
         ShortcutAction.allCases.filter { $0.section == section }
     }
 
-    private func shortcutBinding(for action: ShortcutAction) -> Binding<String> {
-        Binding(
-            get: {
-                ShortcutRegistry(json: keyboardShortcutOverrides).shortcutText(for: action)
-            },
-            set: { newValue in
-                keyboardShortcutOverrides = ShortcutRegistry.json(
-                    updating: keyboardShortcutOverrides,
-                    action: action,
-                    shortcutText: newValue
-                )
-            }
+    private func shortcutText(for action: ShortcutAction) -> String {
+        ShortcutRegistry(json: keyboardShortcutOverrides).shortcutText(for: action)
+    }
+
+    private func setShortcut(_ shortcutText: String, for action: ShortcutAction) {
+        keyboardShortcutOverrides = ShortcutRegistry.json(
+            updating: keyboardShortcutOverrides,
+            action: action,
+            shortcutText: shortcutText
         )
+    }
+}
+
+private struct ShortcutCaptureRow: View {
+    let action: ShortcutAction
+    let shortcutText: String
+    let isRecording: Bool
+    let onRecord: () -> Void
+    let onClear: () -> Void
+    let onReset: () -> Void
+
+    private var visibleShortcutText: String {
+        shortcutText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未設定" : shortcutText
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(action.title)
+                        .font(.callout.weight(.semibold))
+                    Text(action.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 10)
+
+                Text(visibleShortcutText)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(shortcutText.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+
+            HStack(spacing: 8) {
+                Button(isRecording ? "入力待ち..." : "記録") {
+                    onRecord()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button("消去", role: .destructive) {
+                    onClear()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("初期値") {
+                    onReset()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                if !action.isOriginalLabelmeShortcut {
+                    Text("追加機能")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color(.tertiarySystemFill), in: Capsule())
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct ShortcutCaptureOverlay: View {
+    let action: ShortcutAction
+    let onCancel: () -> Void
+    let onCapture: (KeyStroke) -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onCancel)
+
+            VStack(spacing: 14) {
+                Text(action.title)
+                    .font(.headline)
+                Text("割り当てたいキーを押してください")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(action.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 10)
+
+                Button("キャンセル", role: .cancel) {
+                    onCancel()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(18)
+            .frame(width: 330)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                ShortcutCaptureKeyObserver(onCapture: onCapture, onCancel: onCancel)
+                    .frame(width: 0, height: 0)
+            }
+        }
+    }
+}
+
+private struct ShortcutCaptureKeyObserver: UIViewRepresentable {
+    let onCapture: (KeyStroke) -> Void
+    let onCancel: () -> Void
+
+    func makeUIView(context: Context) -> CaptureKeyView {
+        let view = CaptureKeyView()
+        view.onCapture = onCapture
+        view.onCancel = onCancel
+        view.activate()
+        return view
+    }
+
+    func updateUIView(_ uiView: CaptureKeyView, context: Context) {
+        uiView.onCapture = onCapture
+        uiView.onCancel = onCancel
+        uiView.activate()
+    }
+
+    final class CaptureKeyView: UIView {
+        var onCapture: (KeyStroke) -> Void = { _ in }
+        var onCancel: () -> Void = {}
+
+        override var canBecomeFirstResponder: Bool {
+            true
+        }
+
+        func activate() {
+            DispatchQueue.main.async { [weak self] in
+                self?.becomeFirstResponder()
+            }
+        }
+
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            for press in presses {
+                if press.key?.keyCode == .keyboardEscape {
+                    onCancel()
+                    return
+                }
+                if let keyStroke = KeyStroke.fromPress(press) {
+                    onCapture(keyStroke)
+                    return
+                }
+            }
+            super.pressesBegan(presses, with: event)
+        }
     }
 }
 
@@ -1069,14 +1747,18 @@ private struct InspectorPanel: View {
         VStack(spacing: 0) {
             inspectorHeader
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    labelEditor
-                    shapeList
-                    metadata
-                }
+            labelEditor
                 .padding(8)
-            }
+                .frame(height: 174, alignment: .top)
+                .clipped()
+            Divider()
+            shapeList
+                .frame(maxHeight: .infinity, alignment: .top)
+            Divider()
+            metadata
+                .padding(8)
+                .frame(height: 92, alignment: .top)
+                .clipped()
         }
         .background(Color(.secondarySystemGroupedBackground))
         .onChange(of: labelFocusRequest) {
@@ -1162,42 +1844,55 @@ private struct InspectorPanel: View {
             Text("Shape List")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
 
             if let shapes = store.annotation?.shapes, !shapes.isEmpty {
-                VStack(spacing: 4) {
-                    ForEach(shapes) { shape in
-                        ShapeRow(
-                            shape: shape,
-                            isSelected: store.selectedShapeIDs.contains(shape.id),
-                            isDropTarget: shapeDropTarget == .before(shape.id) && draggedShapeID != shape.id,
-                            dragProvider: { dragProvider(for: shape) }
-                        ) {
-                            store.selectShape(shape)
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(shapes) { shape in
+                            ShapeRow(
+                                shape: shape,
+                                isSelected: store.selectedShapeIDs.contains(shape.id),
+                                isDropTarget: shapeDropTarget == .before(shape.id) && draggedShapeID != shape.id,
+                                dragProvider: { dragProvider(for: shape) },
+                                onSelectionToggle: { isSelected in
+                                    store.setShapeSelected(shape, selected: isSelected)
+                                },
+                                onVisibilityToggle: {
+                                    store.toggleShapeVisibility(id: shape.id)
+                                }
+                            ) {
+                                store.selectShape(shape)
+                            }
+                            .onDrop(
+                                of: [UTType.text],
+                                isTargeted: dropTargetBinding(.before(shape.id))
+                            ) { _ in
+                                reorderDraggedShape(to: .before(shape.id))
+                            }
+                            .contextMenu {
+                                ShapeContextMenu(store: store, shape: shape)
+                            }
                         }
-                        .onDrop(
-                            of: [UTType.text],
-                            isTargeted: dropTargetBinding(.before(shape.id))
-                        ) { _ in
-                            reorderDraggedShape(to: .before(shape.id))
-                        }
-                        .contextMenu {
-                            ShapeContextMenu(store: store, shape: shape)
-                        }
-                    }
 
-                    ShapeDropLine(isActive: shapeDropTarget == .end)
-                        .onDrop(
-                            of: [UTType.text],
-                            isTargeted: dropTargetBinding(.end)
-                        ) { _ in
-                            reorderDraggedShape(to: .end)
-                        }
+                        ShapeDropLine(isActive: shapeDropTarget == .end)
+                            .onDrop(
+                                of: [UTType.text],
+                                isTargeted: dropTargetBinding(.end)
+                            ) { _ in
+                                reorderDraggedShape(to: .end)
+                            }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
                 }
             } else {
                 Text("No shapes")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 12)
             }
         }
@@ -1288,48 +1983,65 @@ private struct ShapeRow: View {
     let isSelected: Bool
     let isDropTarget: Bool
     let dragProvider: () -> NSItemProvider
+    let onSelectionToggle: (Bool) -> Void
+    let onVisibilityToggle: () -> Void
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(Color.labelmeColor(for: shape.label))
-                    .frame(width: 5, height: 28)
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(Color.labelmeColor(for: shape.label))
+                .frame(width: 5, height: 28)
 
-                LabelmeIconView(icon: .eye, size: 13)
-                    .opacity(shape.isVisible ? 0.72 : 0.22)
-                    .frame(width: 14)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(shape.label)
-                        .font(.caption.weight(isSelected ? .semibold : .regular))
-                        .lineLimit(1)
-                    Text("\(shape.shapeType.title) - \(shape.pointSummary)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-
-                LabelmeIconView(icon: .lineStrip, size: 13)
-                    .opacity(0.45)
+            Button {
+                onSelectionToggle(!isSelected)
+            } label: {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 15, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                     .frame(width: 22, height: 28)
-                    .contentShape(Rectangle())
-                    .onDrag(dragProvider)
             }
-            .padding(.horizontal, 5)
-            .padding(.vertical, 5)
-            .background(isSelected ? Color.accentColor.opacity(0.16) : Color(.systemBackground), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(alignment: .top) {
-                if isDropTarget {
-                    Capsule()
-                        .fill(Color.accentColor)
-                        .frame(height: 3)
-                        .padding(.horizontal, 4)
-                }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isSelected ? "選択解除" : "選択")
+
+            Button(action: onVisibilityToggle) {
+                LabelmeIconView(icon: .eye, size: 13)
+                    .opacity(shape.isVisible ? 0.78 : 0.22)
+                    .frame(width: 22, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(shape.isVisible ? "非表示" : "表示")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shape.label)
+                    .font(.caption.weight(isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+                Text("\(shape.shapeType.title) - \(shape.pointSummary)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+
+            LabelmeIconView(icon: .lineStrip, size: 13)
+                .opacity(0.45)
+                .frame(width: 22, height: 28)
+                .contentShape(Rectangle())
+                .onDrag(dragProvider)
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .background(isSelected ? Color.accentColor.opacity(0.16) : Color(.systemBackground), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(alignment: .top) {
+            if isDropTarget {
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(height: 3)
+                    .padding(.horizontal, 4)
             }
         }
-        .buttonStyle(.plain)
+        .onTapGesture(perform: action)
     }
 }
 
