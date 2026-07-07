@@ -1552,6 +1552,8 @@ private enum LocalAppDocumentsDatasetFinder {
 @MainActor
 final class DatasetStore: ObservableObject {
     @AppStorage("serverBaseURL") var serverBaseURL = "http://127.0.0.1:8765"
+    @AppStorage("cloudflareAccessClientId") var cloudflareAccessClientId = ""
+    @AppStorage("cloudflareAccessClientSecret") var cloudflareAccessClientSecret = ""
 
     @Published var health: ServerHealth?
     @Published var items: [DatasetImageItem] = []
@@ -1587,7 +1589,13 @@ final class DatasetStore: ObservableObject {
     private var localDataset: LocalDatasetProviding?
     private let maxHistoryDepth = 120
     private var client: LabelmeAPI? {
-        try? LabelmeAPI(baseURLString: serverBaseURL)
+        try? LabelmeAPI(
+            baseURLString: serverBaseURL,
+            cloudflareAccess: CloudflareAccessCredentials(
+                clientId: cloudflareAccessClientId.trimmingCharacters(in: .whitespacesAndNewlines),
+                clientSecret: cloudflareAccessClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        )
     }
 
     private struct ImageAdjustmentState {

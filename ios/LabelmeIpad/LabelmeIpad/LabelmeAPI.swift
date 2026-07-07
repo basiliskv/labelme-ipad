@@ -3,13 +3,15 @@ import UIKit
 
 struct LabelmeAPI {
     var baseURL: URL
+    var cloudflareAccess: CloudflareAccessCredentials
 
-    init(baseURLString: String) throws {
+    init(baseURLString: String, cloudflareAccess: CloudflareAccessCredentials = .empty) throws {
         let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), url.scheme != nil, url.host != nil else {
             throw URLError(.badURL)
         }
         baseURL = url
+        self.cloudflareAccess = cloudflareAccess
     }
 
     func health() async throws -> ServerHealth {
@@ -39,6 +41,7 @@ struct LabelmeAPI {
         request.httpMethod = "PUT"
         request.timeoutInterval = 20
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        applyAccessHeaders(to: &request)
         request.httpBody = try JSONEncoder.labelme.encode(annotation)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(data: data, response: response)
@@ -46,10 +49,11 @@ struct LabelmeAPI {
     }
 
     func loadImage(for item: DatasetImageItem) async throws -> UIImage {
-        guard let url = URL(string: item.imageUrl) else {
+        guard let url = serverURL(from: item.imageUrl) else {
             throw URLError(.badURL)
         }
-        let request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 30)
+        var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 30)
+        applyAccessHeaders(to: &request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(data: data, response: response)
         guard let image = UIImage(data: data) else {
@@ -64,9 +68,16 @@ struct LabelmeAPI {
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 12
+        applyAccessHeaders(to: &request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(data: data, response: response)
         return try JSONDecoder.labelme.decode(T.self, from: data)
+    }
+
+    private func applyAccessHeaders(to request: inout URLRequest) {
+        guard cloudflareAccess.isConfigured else { return }
+        request.setValue(cloudflareAccess.clientId, forHTTPHeaderField: "CF-Access-Client-Id")
+        request.setValue(cloudflareAccess.clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
     }
 
     private func makeURL(path: String, queryItems: [URLQueryItem]) -> URL? {
@@ -76,15 +87,40 @@ struct LabelmeAPI {
         return components?.url
     }
 
+    private func serverURL(from rawValue: String) -> URL? {
+        guard var components = URLComponents(string: rawValue) else { return nil }
+        if cloudflareAccess.isConfigured, let baseHost = baseURL.host {
+            components.scheme = baseURL.scheme
+            components.host = baseHost
+            components.port = baseURL.port
+        }
+        return components.url
+    }
+
     private func validate(data: Data, response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200...299).contains(http.statusCode) else {
             if let payload = try? JSONDecoder().decode(ServerErrorPayload.self, from: data) {
                 throw LabelmeAPIError.server(payload.error)
             }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw LabelmeAPIError.server("HTTP \(http.statusCode). Check server authentication or Cloudflare Access credentials.")
+            }
             throw LabelmeAPIError.server("HTTP \(http.statusCode)")
         }
     }
+}
+
+struct CloudflareAccessCredentials: Equatable {
+    var clientId: String
+    var clientSecret: String
+
+    var isConfigured: Bool {
+        !clientId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !clientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static let empty = CloudflareAccessCredentials(clientId: "", clientSecret: "")
 }
 
 private struct ServerErrorPayload: Decodable {

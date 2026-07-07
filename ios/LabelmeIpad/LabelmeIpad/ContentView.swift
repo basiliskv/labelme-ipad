@@ -8,10 +8,13 @@ struct ContentView: View {
     @AppStorage("addPointModifier") private var addPointModifierRaw = ShortcutModifier.option.rawValue
     @AppStorage("keyboardShortcutOverrides") private var keyboardShortcutOverrides = ShortcutRegistry.defaultJSON()
     @State private var serverDraft = ""
+    @State private var cloudflareAccessClientIdDraft = ""
+    @State private var cloudflareAccessClientSecretDraft = ""
     @State private var canvasCommand: CanvasCommand?
     @State private var showsFileList = true
     @State private var showsInspector = true
     @State private var showsShortcutSettings = false
+    @State private var showsCloudflareAccessSettings = false
     @State private var localDatasetPickerMode: LocalDatasetPickerMode?
     @State private var canUndoLastPoint = false
     @State private var labelFocusRequest = 0
@@ -65,6 +68,8 @@ struct ContentView: View {
         }
         .task {
             serverDraft = store.serverBaseURL
+            cloudflareAccessClientIdDraft = store.cloudflareAccessClientId
+            cloudflareAccessClientSecretDraft = store.cloudflareAccessClientSecret
             await store.connect()
         }
         .alert("Error", isPresented: Binding(get: { store.errorMessage != nil }, set: { _ in store.errorMessage = nil })) {
@@ -117,6 +122,36 @@ struct ContentView: View {
                 .autocorrectionDisabled()
                 .font(.caption.monospaced())
                 .frame(maxWidth: 300)
+
+            Button {
+                cloudflareAccessClientIdDraft = store.cloudflareAccessClientId
+                cloudflareAccessClientSecretDraft = store.cloudflareAccessClientSecret
+                showsCloudflareAccessSettings = true
+            } label: {
+                Text("CF")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(store.cloudflareAccessClientId.isEmpty || store.cloudflareAccessClientSecret.isEmpty ? .secondary : .green)
+            .popover(isPresented: $showsCloudflareAccessSettings) {
+                CloudflareAccessSettingsView(
+                    clientId: $cloudflareAccessClientIdDraft,
+                    clientSecret: $cloudflareAccessClientSecretDraft,
+                    onSave: {
+                        saveCloudflareAccessSettings()
+                        showsCloudflareAccessSettings = false
+                    },
+                    onClear: {
+                        cloudflareAccessClientIdDraft = ""
+                        cloudflareAccessClientSecretDraft = ""
+                        saveCloudflareAccessSettings()
+                        showsCloudflareAccessSettings = false
+                    }
+                )
+                .frame(width: 420)
+                .presentationCompactAdaptation(.popover)
+            }
 
             Button {
                 Task { await store.openAppDocumentsDataset() }
@@ -268,7 +303,13 @@ struct ContentView: View {
 
     private func openServer() {
         store.serverBaseURL = serverDraft
+        saveCloudflareAccessSettings()
         Task { await store.connect() }
+    }
+
+    private func saveCloudflareAccessSettings() {
+        store.cloudflareAccessClientId = cloudflareAccessClientIdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.cloudflareAccessClientSecret = cloudflareAccessClientSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func openLocalDataset(_ url: URL, mode: LocalDatasetPickerMode) {
@@ -404,6 +445,50 @@ private struct LocalDatasetPicker: UIViewControllerRepresentable {
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
             onCancel()
         }
+    }
+}
+
+private struct CloudflareAccessSettingsView: View {
+    @Binding var clientId: String
+    @Binding var clientSecret: String
+    let onSave: () -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("CF Access")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Button("Clear", role: .destructive) {
+                    onClear()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Save") {
+                    onSave()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("CF-Access-Client-Id", text: $clientId)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.caption.monospaced())
+
+                SecureField("CF-Access-Client-Secret", text: $clientSecret)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.caption.monospaced())
+                    .privacySensitive()
+            }
+        }
+        .padding(12)
     }
 }
 
