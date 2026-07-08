@@ -655,6 +655,7 @@ private protocol LocalDatasetProviding: AnyObject {
     func annotation(for item: DatasetImageItem) throws -> LabelmeAnnotation
     func loadImage(for item: DatasetImageItem) throws -> UIImage
     func save(_ annotation: LabelmeAnnotation, for item: DatasetImageItem) throws -> LabelmeAnnotation
+    func importImages(from urls: [URL]) throws -> [DatasetImageItem]
 }
 
 private final class LocalLabelmeDataset: LocalDatasetProviding {
@@ -805,6 +806,23 @@ private final class LocalLabelmeDataset: LocalDatasetProviding {
         return saved
     }
 
+    func importImages(from urls: [URL]) throws -> [DatasetImageItem] {
+        guard !urls.isEmpty else { return [] }
+        try fileManager.createDirectory(at: imagesURL, withIntermediateDirectories: true, attributes: nil)
+        var importedRelativePaths: [String] = []
+        for sourceURL in urls {
+            let source = sourceURL.standardizedFileURL
+            guard Self.imageExtensions.contains(source.pathExtension.lowercased()) else {
+                throw LocalDatasetError.unsupportedImage(source.lastPathComponent)
+            }
+            let destination = uniqueImageURL(for: source.lastPathComponent)
+            try fileManager.copyItem(at: source, to: destination)
+            importedRelativePaths.append(Self.relativePath(from: imagesURL, to: destination))
+        }
+        try refresh()
+        return importedRelativePaths.compactMap { recordByID[Self.recordID($0)].map(itemPayload) }
+    }
+
     private func record(for item: DatasetImageItem) throws -> LocalImageRecord {
         if let record = recordByID[item.id] {
             return record
@@ -833,6 +851,26 @@ private final class LocalLabelmeDataset: LocalDatasetProviding {
     private func labelURL(for relativePath: String) -> URL {
         let labelRelative = (relativePath as NSString).deletingPathExtension + ".json"
         return Self.childURL(root: labelsURL, relativePath: labelRelative)
+    }
+
+    private func uniqueImageURL(for filename: String) -> URL {
+        let fallbackName = filename.isEmpty ? "image.jpg" : filename
+        let base = URL(fileURLWithPath: fallbackName).lastPathComponent
+        let candidate = imagesURL.appendingPathComponent(base)
+        if !fileManager.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+
+        let stem = (base as NSString).deletingPathExtension
+        let ext = (base as NSString).pathExtension
+        for index in 1..<10000 {
+            let name = ext.isEmpty ? "\(stem)_\(index)" : "\(stem)_\(index).\(ext)"
+            let next = imagesURL.appendingPathComponent(name)
+            if !fileManager.fileExists(atPath: next.path) {
+                return next
+            }
+        }
+        return imagesURL.appendingPathComponent(UUID().uuidString + "-" + base)
     }
 
     private func itemPayload(_ record: LocalImageRecord) -> DatasetImageItem {
@@ -1075,6 +1113,10 @@ private final class ZipLabelmeDataset: LocalDatasetProviding {
         return saved
     }
 
+    func importImages(from urls: [URL]) throws -> [DatasetImageItem] {
+        throw LocalDatasetError.readOnlyZipImport
+    }
+
     private func record(for item: DatasetImageItem) throws -> ZipImageRecord {
         if let record = recordByID[item.id] {
             return record
@@ -1187,6 +1229,8 @@ private enum LocalDatasetError: LocalizedError {
     case missingImage(String)
     case invalidZip(String)
     case unsupportedZipEntry(String)
+    case unsupportedImage(String)
+    case readOnlyZipImport
 
     var errorDescription: String? {
         switch self {
@@ -1202,6 +1246,10 @@ private enum LocalDatasetError: LocalizedError {
             "Invalid zip: \(message)"
         case .unsupportedZipEntry(let message):
             "Unsupported zip entry: \(message)"
+        case .unsupportedImage(let filename):
+            "Unsupported image file: \(filename)"
+        case .readOnlyZipImport:
+            "Zip datasets are read-only. Open or import a folder dataset to add images."
         }
     }
 }
@@ -1823,6 +1871,7 @@ final class DatasetStore: ObservableObject {
     @Published var isLoading = false
     @Published var isTestingConnection = false
     @Published var isSaving = false
+    @Published var isUploading = false
     @Published var isDirty = false
     @Published var showsLabels = true
     @Published var fillsShapes = true
@@ -1943,7 +1992,7 @@ final class DatasetStore: ObservableObject {
         defer { isLoading = false }
         do {
             let health = try await client.health()
-            let response = try await client.images(query: "")
+            let response = try await client.allImages(query: "")
             localDataset = nil
             resetDatasetState()
             self.health = health
@@ -2068,11 +2117,51 @@ final class DatasetStore: ObservableObject {
 
         guard let client else { return }
         do {
-            let response = try await client.images(query: searchText)
+            let response = try await client.allImages(query: searchText)
             items = response.items
             statusMessage = "\(response.total) images"
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func uploadImages(from urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        if isDirty {
+            await save()
+        }
+        let scopedURLs = urls.map { url in
+            (url, url.startAccessingSecurityScopedResource())
+        }
+        defer {
+            scopedURLs.forEach { url, accessed in
+                if accessed {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+        }
+        isUploading = true
+        statusMessage = "Uploading \(urls.count) image\(urls.count == 1 ? "" : "s")..."
+        defer { isUploading = false }
+        do {
+            let uploaded: [DatasetImageItem]
+            if let localDataset {
+                uploaded = try localDataset.importImages(from: urls)
+            } else {
+                guard let client else {
+                    throw URLError(.badURL)
+                }
+                uploaded = try await client.uploadImages(from: urls).items
+            }
+            await refreshList()
+            statusMessage = "Added \(uploaded.count) image\(uploaded.count == 1 ? "" : "s")"
+            if let first = uploaded.first,
+               let current = items.first(where: { $0.id == first.id }) ?? items.first(where: { $0.relativePath == first.relativePath }) {
+                await select(current)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            statusMessage = "Image upload failed"
         }
     }
 
@@ -2378,6 +2467,22 @@ final class DatasetStore: ObservableObject {
             return updated
         } ?? []
         currentLabel = trimmed
+        markDirty()
+    }
+
+    func updateShapeLabel(id: UUID, label: String) {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, annotation != nil else { return }
+        annotation?.shapes = annotation?.shapes.map { shape in
+            guard shape.id == id else { return shape }
+            var updated = shape
+            updated.label = trimmed
+            return updated
+        } ?? []
+        currentLabel = trimmed
+        if selectedShapeIDs.contains(id) || selectedShapeID == id {
+            selectedShapeID = id
+        }
         markDirty()
     }
 

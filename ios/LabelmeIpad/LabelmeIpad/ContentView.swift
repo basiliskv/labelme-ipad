@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var showsSettings = false
     @State private var showsBrightnessContrast = false
     @State private var localDatasetPickerMode: LocalDatasetPickerMode?
+    @State private var imageUploadPickerPresented = false
     @State private var canUndoLastPoint = false
     @State private var labelFocusRequest = 0
     @State private var isMultiSelectModifierPressed = false
@@ -41,7 +42,8 @@ struct ContentView: View {
                         showsFileList: $showsFileList,
                         showsInspector: $showsInspector,
                         showsBrightnessContrast: $showsBrightnessContrast,
-                        onShowSettings: { showsSettings = true }
+                        onShowSettings: { showsSettings = true },
+                        onUploadImages: { imageUploadPickerPresented = true }
                     )
                     Divider()
                     editorSurface
@@ -107,9 +109,20 @@ struct ContentView: View {
                 onOpenFolder: {
                     localDatasetPickerMode = .openFolder
                     showsSettings = false
+                },
+                onUploadImages: {
+                    imageUploadPickerPresented = true
+                    showsSettings = false
                 }
             )
             .presentationDetents([.large])
+        }
+        .fileImporter(
+            isPresented: $imageUploadPickerPresented,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: true
+        ) { result in
+            handleImageUploadSelection(result)
         }
         .fullScreenCover(item: $localDatasetPickerMode) { mode in
             LocalDatasetPicker(mode: mode) { url in
@@ -154,7 +167,7 @@ struct ContentView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
 
-            if store.isLoading || store.isTestingConnection {
+            if store.isLoading || store.isTestingConnection || store.isUploading {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -379,6 +392,15 @@ struct ContentView: View {
         }
     }
 
+    private func handleImageUploadSelection(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            Task { await store.uploadImages(from: urls) }
+        case .failure(let error):
+            store.errorMessage = error.localizedDescription
+        }
+    }
+
     @ViewBuilder
     private var editorSurface: some View {
         if let image = store.image, store.annotation != nil {
@@ -597,6 +619,7 @@ private struct AppSettingsView: View {
     let onOpenDocuments: () -> Void
     let onOpenZip: () -> Void
     let onOpenFolder: () -> Void
+    let onUploadImages: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -849,6 +872,15 @@ private struct AppSettingsView: View {
             } label: {
                 Label("Files からフォルダを開く", systemImage: "folder")
             }
+
+            Divider()
+
+            Button {
+                onUploadImages()
+            } label: {
+                Label("画像ファイルを追加", systemImage: "photo.badge.plus")
+            }
+            .disabled(store.isUploading || store.isLoading)
         }
     }
 
@@ -936,7 +968,7 @@ private struct AppSettingsView: View {
     private var settingsStatusRows: some View {
         LabeledContent("状態") {
             HStack(spacing: 8) {
-                if store.isTestingConnection || store.isLoading {
+                if store.isTestingConnection || store.isLoading || store.isUploading {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -1038,6 +1070,7 @@ private struct LabelmeToolbar: View {
     @Binding var showsInspector: Bool
     @Binding var showsBrightnessContrast: Bool
     let onShowSettings: () -> Void
+    let onUploadImages: () -> Void
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -1053,6 +1086,11 @@ private struct LabelmeToolbar: View {
                 ToolButton(title: "Settings", icon: .info, isSelected: false) {
                     onShowSettings()
                 }
+
+                ToolButton(title: store.isUploading ? "Uploading" : "Add\nImages", icon: .folderOpen, isSelected: false) {
+                    onUploadImages()
+                }
+                .disabled(store.isUploading || store.isLoading)
 
                 toolbarDivider
 
@@ -1481,6 +1519,7 @@ private struct ShortcutCaptureOverlay: View {
             }
         }
     }
+
 }
 
 private struct ShortcutCaptureKeyObserver: UIViewRepresentable {
@@ -1780,6 +1819,8 @@ private struct InspectorPanel: View {
     @FocusState private var isLabelFieldFocused: Bool
     @State private var draggedShapeID: UUID?
     @State private var shapeDropTarget: ShapeDropTarget?
+    @State private var labelPickerShapeID: UUID?
+    @State private var labelPickerDraft = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1905,7 +1946,34 @@ private struct InspectorPanel: View {
                                     store.selectShape(shape, extending: true)
                                 } else {
                                     store.selectShape(shape)
+                                    showLabelPicker(for: shape)
                                 }
+                            }
+                            .popover(
+                                isPresented: Binding(
+                                    get: { labelPickerShapeID == shape.id },
+                                    set: { isPresented in
+                                        if !isPresented, labelPickerShapeID == shape.id {
+                                            labelPickerShapeID = nil
+                                        }
+                                    }
+                                ),
+                                arrowEdge: .trailing
+                            ) {
+                                ShapeLabelPickerPopover(
+                                    shape: shape,
+                                    draftLabel: $labelPickerDraft,
+                                    labels: store.recentLabels,
+                                    onChoose: { label in
+                                        applyLabel(label, to: shape)
+                                    },
+                                    onApply: {
+                                        applyLabel(labelPickerDraft, to: shape)
+                                    },
+                                    onCancel: {
+                                        labelPickerShapeID = nil
+                                    }
+                                )
                             }
                             .onDrop(
                                 of: [UTType.text],
@@ -1985,6 +2053,16 @@ private struct InspectorPanel: View {
         return NSItemProvider(object: shape.id.uuidString as NSString)
     }
 
+    private func showLabelPicker(for shape: LabelmeShape) {
+        labelPickerShapeID = shape.id
+        labelPickerDraft = shape.label
+    }
+
+    private func applyLabel(_ label: String, to shape: LabelmeShape) {
+        store.updateShapeLabel(id: shape.id, label: label)
+        labelPickerShapeID = nil
+    }
+
     private func dropTargetBinding(_ target: ShapeDropTarget) -> Binding<Bool> {
         Binding(
             get: { shapeDropTarget == target },
@@ -2020,6 +2098,13 @@ private enum ShapeDropTarget: Equatable {
     case end
 }
 
+private extension Sequence where Element: Hashable {
+    func uniqued() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
+    }
+}
+
 private extension CanvasTool {
     var shortcutAction: ShortcutAction {
         switch self {
@@ -2031,6 +2116,95 @@ private extension CanvasTool {
         case .point: .createPoint
         case .linestrip: .createLinestrip
         }
+    }
+}
+
+private struct ShapeLabelPickerPopover: View {
+    let shape: LabelmeShape
+    @Binding var draftLabel: String
+    let labels: [String]
+    let onChoose: (String) -> Void
+    let onApply: () -> Void
+    let onCancel: () -> Void
+
+    private var trimmedDraft: String {
+        draftLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var visibleLabels: [String] {
+        Array(
+            ([shape.label] + labels)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .uniqued()
+                .prefix(18)
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Color.labelmeColor(for: shape.label))
+                    .frame(width: 5, height: 24)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("ラベルを変更")
+                        .font(.callout.weight(.semibold))
+                    Text("\(shape.shapeType.title) - \(shape.pointSummary)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            TextField("label", text: $draftLabel)
+                .textFieldStyle(.roundedBorder)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.callout)
+
+            if !visibleLabels.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 74), spacing: 6)], alignment: .leading, spacing: 6) {
+                    ForEach(visibleLabels, id: \.self) { label in
+                        Button {
+                            onChoose(label)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(Color.labelmeColor(for: label))
+                                    .frame(width: 7, height: 7)
+                                Text(label)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.72)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
+
+            HStack {
+                Button("キャンセル", role: .cancel) {
+                    onCancel()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Spacer()
+
+                Button("適用") {
+                    onApply()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(trimmedDraft.isEmpty)
+            }
+        }
+        .padding(12)
+        .frame(width: 280)
+        .presentationCompactAdaptation(.popover)
     }
 }
 

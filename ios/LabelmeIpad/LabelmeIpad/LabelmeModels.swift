@@ -23,6 +23,12 @@ struct DatasetImageListResponse: Decodable {
     let items: [DatasetImageItem]
 }
 
+struct DatasetImageUploadResponse: Decodable {
+    let ok: Bool
+    let count: Int
+    let items: [DatasetImageItem]
+}
+
 struct DatasetImageItem: Decodable, Identifiable, Hashable {
     let id: String
     let fileName: String

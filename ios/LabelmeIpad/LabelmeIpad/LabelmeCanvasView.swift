@@ -247,7 +247,7 @@ struct LabelmeCanvasView: View {
     ) {
         for point in shape.points {
             let screen = transform.screenPoint(point.cgPoint)
-            let size: CGFloat = selected ? 9 : 6
+            let size: CGFloat = selected ? 5.5 : 4
             let rect = CGRect(x: screen.x - size / 2, y: screen.y - size / 2, width: size, height: size)
             var vertex = Path()
             if selected {
@@ -256,7 +256,7 @@ struct LabelmeCanvasView: View {
                 vertex.addEllipse(in: rect)
             }
             context.fill(vertex, with: .color(selected ? .white : palette.stroke))
-            context.stroke(vertex, with: .color(palette.stroke), lineWidth: 1)
+            context.stroke(vertex, with: .color(palette.stroke), lineWidth: selected ? 0.8 : 0.6)
         }
     }
 

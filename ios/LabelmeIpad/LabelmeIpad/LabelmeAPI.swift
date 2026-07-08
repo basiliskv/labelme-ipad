@@ -18,7 +18,7 @@ struct LabelmeAPI {
         try await get(path: "/api/health", queryItems: [])
     }
 
-    func images(offset: Int = 0, limit: Int = 200, query: String = "") async throws -> DatasetImageListResponse {
+    func images(offset: Int = 0, limit: Int = 1000, query: String = "") async throws -> DatasetImageListResponse {
         try await get(
             path: "/api/images",
             queryItems: [
@@ -26,6 +26,49 @@ struct LabelmeAPI {
                 URLQueryItem(name: "limit", value: "\(limit)"),
                 URLQueryItem(name: "q", value: query.isEmpty ? nil : query),
             ]
+        )
+    }
+
+    func allImages(query: String = "") async throws -> DatasetImageListResponse {
+        let pageLimit = 1000
+        var offset = 0
+        var allItems: [DatasetImageItem] = []
+        var firstPage: DatasetImageListResponse?
+        var total = 0
+
+        repeat {
+            let page = try await images(offset: offset, limit: pageLimit, query: query)
+            if firstPage == nil {
+                firstPage = page
+            }
+            total = page.total
+            allItems.append(contentsOf: page.items)
+            if page.items.isEmpty {
+                break
+            }
+            offset += page.items.count
+        } while allItems.count < total
+
+        guard let firstPage else {
+            return DatasetImageListResponse(
+                datasetRoot: "",
+                imagesRoot: "",
+                labelsRoot: "",
+                offset: 0,
+                limit: pageLimit,
+                total: 0,
+                items: []
+            )
+        }
+
+        return DatasetImageListResponse(
+            datasetRoot: firstPage.datasetRoot,
+            imagesRoot: firstPage.imagesRoot,
+            labelsRoot: firstPage.labelsRoot,
+            offset: 0,
+            limit: allItems.count,
+            total: total,
+            items: allItems
         )
     }
 
@@ -46,6 +89,22 @@ struct LabelmeAPI {
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(data: data, response: response)
         return try JSONDecoder.labelme.decode(LabelmeAnnotation.self, from: data)
+    }
+
+    func uploadImages(from urls: [URL]) async throws -> DatasetImageUploadResponse {
+        guard let url = makeURL(path: "/api/images", queryItems: []) else {
+            throw URLError(.badURL)
+        }
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        applyAccessHeaders(to: &request)
+        request.httpBody = try multipartBody(for: urls, boundary: boundary)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(data: data, response: response)
+        return try JSONDecoder.labelme.decode(DatasetImageUploadResponse.self, from: data)
     }
 
     func loadImage(for item: DatasetImageItem) async throws -> UIImage {
@@ -78,6 +137,39 @@ struct LabelmeAPI {
         guard cloudflareAccess.isConfigured else { return }
         request.setValue(cloudflareAccess.clientId, forHTTPHeaderField: "CF-Access-Client-Id")
         request.setValue(cloudflareAccess.clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
+    }
+
+    private func multipartBody(for urls: [URL], boundary: String) throws -> Data {
+        var body = Data()
+        for url in urls {
+            let filename = url.lastPathComponent.isEmpty ? "image.jpg" : url.lastPathComponent
+            body.appendString("--\(boundary)\r\n")
+            body.appendString("Content-Disposition: form-data; name=\"files\"; filename=\"\(filename.escapedMultipartValue)\"\r\n")
+            body.appendString("Content-Type: \(mimeType(for: url))\r\n\r\n")
+            body.append(try Data(contentsOf: url))
+            body.appendString("\r\n")
+        }
+        body.appendString("--\(boundary)--\r\n")
+        return body
+    }
+
+    private func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg":
+            return "image/jpeg"
+        case "png":
+            return "image/png"
+        case "gif":
+            return "image/gif"
+        case "webp":
+            return "image/webp"
+        case "bmp":
+            return "image/bmp"
+        case "tif", "tiff":
+            return "image/tiff"
+        default:
+            return "application/octet-stream"
+        }
     }
 
     private func makeURL(path: String, queryItems: [URLQueryItem]) -> URL? {
@@ -149,5 +241,18 @@ extension JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return encoder
+    }
+}
+
+private extension Data {
+    mutating func appendString(_ value: String) {
+        append(Data(value.utf8))
+    }
+}
+
+private extension String {
+    var escapedMultipartValue: String {
+        replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }
