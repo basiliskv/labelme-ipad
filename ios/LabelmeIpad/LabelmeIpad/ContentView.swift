@@ -2110,6 +2110,7 @@ private extension CanvasTool {
         switch self {
         case .edit: .editShape
         case .polygon: .createPolygon
+        case .freehand: .createPolygon
         case .rectangle: .createRectangle
         case .circle: .createCircle
         case .line: .createLine
@@ -2339,6 +2340,13 @@ private struct ShapeContextMenu: View {
             LabelmeMenuLabel(title: "Connect Polygon", icon: .connect)
         }
         .disabled(!store.canConnectSelectedPolygons)
+
+        Button {
+            store.subtractOverlappingPolygons()
+        } label: {
+            LabelmeMenuLabel(title: "Subtract Overlap", icon: .paintBucket)
+        }
+        .disabled(!store.canSubtractOverlappingPolygons)
 
         Divider()
 

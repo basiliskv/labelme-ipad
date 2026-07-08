@@ -433,6 +433,7 @@ enum LabelmeShapeType: String, Codable, CaseIterable, Identifiable {
 enum CanvasTool: String, CaseIterable, Identifiable {
     case edit
     case polygon
+    case freehand
     case rectangle
     case circle
     case line
@@ -445,6 +446,7 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         switch self {
         case .edit: "Edit Shapes"
         case .polygon: "Polygon"
+        case .freehand: "Freehand"
         case .rectangle: "Rectangle"
         case .circle: "Circle"
         case .line: "Line"
@@ -457,6 +459,7 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         switch self {
         case .edit: .edit
         case .polygon: .polygon
+        case .freehand: .lineStrip
         case .rectangle: .rectangle
         case .circle: .circle
         case .line: .line
@@ -469,6 +472,7 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         switch self {
         case .edit: .polygon
         case .polygon: .polygon
+        case .freehand: .polygon
         case .rectangle: .rectangle
         case .circle: .circle
         case .line: .line
@@ -783,7 +787,7 @@ enum LabelmePolygonOverlapResolver {
         bounds = bounds.insetBy(dx: -2, dy: -2)
         guard bounds.width > 1, bounds.height > 1 else { return target }
 
-        let maxDimension: CGFloat = 1200
+        let maxDimension: CGFloat = 700
         let scale = min(1, maxDimension / max(bounds.width, bounds.height))
         let width = max(4, Int(ceil(bounds.width * scale)))
         let height = max(4, Int(ceil(bounds.height * scale)))
@@ -815,13 +819,14 @@ enum LabelmePolygonOverlapResolver {
             context.fillPath()
         }
 
+        let simplifyTolerance = max(4, 2 / max(scale, 0.001))
         let loops = polygonLoops(from: pixels, width: width, height: height)
             .map { simplify($0.map { point in
                 LabelmePoint(
                     x: bounds.minX + point.x / scale,
                     y: bounds.minY + point.y / scale
                 )
-            }) }
+            }, tolerance: simplifyTolerance) }
             .filter { $0.count >= 3 }
 
         guard !loops.isEmpty else { return nil }
@@ -919,14 +924,22 @@ enum LabelmePolygonOverlapResolver {
         }
     }
 
-    private static func simplify(_ points: [LabelmePoint]) -> [LabelmePoint] {
+    private static func simplify(_ points: [LabelmePoint], tolerance: CGFloat) -> [LabelmePoint] {
         guard points.count > 3 else { return points }
+        let minimumDistance = max(tolerance, 1)
+        let areaThreshold = max(tolerance * tolerance * 0.75, 1)
         var result: [LabelmePoint] = []
         for point in points {
-            if let last = result.last, pointDistance(last.cgPoint, point.cgPoint) < 2 {
+            if let last = result.last, pointDistance(last.cgPoint, point.cgPoint) < minimumDistance {
                 continue
             }
             result.append(point)
+        }
+        if result.count > 3,
+           let first = result.first,
+           let last = result.last,
+           pointDistance(first.cgPoint, last.cgPoint) < minimumDistance {
+            result.removeLast()
         }
         var index = 0
         while result.count > 3 && index < result.count {
@@ -934,7 +947,7 @@ enum LabelmePolygonOverlapResolver {
             let current = result[index].cgPoint
             let next = result[(index + 1) % result.count].cgPoint
             let area = abs((current.x - prev.x) * (next.y - prev.y) - (current.y - prev.y) * (next.x - prev.x))
-            if area < 0.75 {
+            if area < areaThreshold {
                 result.remove(at: index)
             } else {
                 index += 1

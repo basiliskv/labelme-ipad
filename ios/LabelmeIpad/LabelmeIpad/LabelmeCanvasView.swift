@@ -39,6 +39,7 @@ struct LabelmeCanvasView: View {
     @State private var lastDragScreenPoint: CGPoint?
     @State private var selectedVertex: (shapeID: UUID, vertexIndex: Int)?
     @State private var adjustedImage: UIImage?
+    @State private var isFreehandDrawing = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -289,7 +290,7 @@ struct LabelmeCanvasView: View {
             points: points.map(LabelmePoint.init),
             shapeType: tool.shapeType
         )
-        let path = renderPath(for: shape, transform: transform, forceOpen: tool == .polygon || tool == .linestrip)
+        let path = renderPath(for: shape, transform: transform, forceOpen: tool == .polygon || tool == .linestrip || tool == .freehand)
         context.stroke(path, with: .color(.yellow), style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
         for point in points {
             let screen = transform.screenPoint(point)
@@ -443,6 +444,13 @@ struct LabelmeCanvasView: View {
                 dragStart = imagePoint
             }
             dragEnd = imagePoint
+        case .freehand:
+            if !isFreehandDrawing {
+                isFreehandDrawing = true
+                onEditingBegan()
+            }
+            appendFreehandPoint(imagePoint, transform: transform)
+            dragEnd = imagePoint
         case .polygon, .linestrip, .point:
             dragEnd = imagePoint
         }
@@ -470,6 +478,9 @@ struct LabelmeCanvasView: View {
             } else {
                 draftPoints.append(clamped(imagePoint))
             }
+        case .freehand:
+            appendFreehandPoint(imagePoint, transform: transform)
+            finishFreehandDraft()
         case .linestrip:
             draftPoints.append(clamped(imagePoint))
         case .rectangle:
@@ -492,6 +503,10 @@ struct LabelmeCanvasView: View {
         lastDragScreenPoint = nil
         dragStart = nil
         dragEnd = nil
+        if isFreehandDrawing {
+            isFreehandDrawing = false
+            onEditingEnded()
+        }
         if finishedDrag?.usesUndoGrouping == true {
             onEditingEnded()
         }
@@ -569,6 +584,8 @@ struct LabelmeCanvasView: View {
         switch tool {
         case .polygon:
             draftPoints.count >= 3
+        case .freehand:
+            draftPoints.count >= 3
         case .linestrip:
             draftPoints.count >= 2
         default:
@@ -578,6 +595,14 @@ struct LabelmeCanvasView: View {
 
     private func finishDraft() {
         guard canFinishDraft else { return }
+        if tool == .freehand {
+            finishFreehandDraft()
+            if isFreehandDrawing {
+                isFreehandDrawing = false
+                onEditingEnded()
+            }
+            return
+        }
         commit(points: draftPoints, shapeType: tool.shapeType)
         draftPoints.removeAll()
         dragEnd = nil
@@ -589,6 +614,10 @@ struct LabelmeCanvasView: View {
         dragEnd = nil
         activeDrag = nil
         canUndoLastPoint = false
+        if isFreehandDrawing {
+            isFreehandDrawing = false
+            onEditingEnded()
+        }
     }
 
     private func commit(points: [CGPoint], shapeType: LabelmeShapeType) {
@@ -604,6 +633,70 @@ struct LabelmeCanvasView: View {
         selectedVertex = nil
         selectedShapeIDs = [shape.id]
         onChange()
+    }
+
+    private func appendFreehandPoint(_ point: CGPoint, transform: CanvasTransform) {
+        let clampedPoint = clamped(point)
+        let minimumDistance = max(5 / transform.scale, 1.5)
+        if let last = draftPoints.last,
+           hypot(last.x - clampedPoint.x, last.y - clampedPoint.y) < minimumDistance {
+            return
+        }
+        draftPoints.append(clampedPoint)
+    }
+
+    private func finishFreehandDraft() {
+        let simplified = simplifyFreehand(points: draftPoints)
+        guard simplified.count >= 3 else {
+            draftPoints.removeAll()
+            dragEnd = nil
+            return
+        }
+        commit(points: simplified, shapeType: .polygon)
+        draftPoints.removeAll()
+        dragEnd = nil
+    }
+
+    private func simplifyFreehand(points: [CGPoint]) -> [CGPoint] {
+        guard points.count > 3 else { return points.map(clamped) }
+        let bounds = points.reduce(CGRect.null) { partial, point in
+            partial.union(CGRect(x: point.x, y: point.y, width: 1, height: 1))
+        }
+        let tolerance = max(max(bounds.width, bounds.height) * 0.006, 4)
+        var filtered: [CGPoint] = []
+        for point in points.map(clamped) {
+            if let last = filtered.last,
+               hypot(last.x - point.x, last.y - point.y) < tolerance {
+                continue
+            }
+            filtered.append(point)
+        }
+        if filtered.count > 3,
+           let first = filtered.first,
+           let last = filtered.last,
+           hypot(first.x - last.x, first.y - last.y) < tolerance {
+            filtered.removeLast()
+        }
+        return removeNearlyCollinear(points: filtered, tolerance: tolerance)
+    }
+
+    private func removeNearlyCollinear(points: [CGPoint], tolerance: CGFloat) -> [CGPoint] {
+        guard points.count > 3 else { return points }
+        var result = points
+        let areaThreshold = tolerance * tolerance
+        var index = 0
+        while result.count > 3 && index < result.count {
+            let previous = result[(index - 1 + result.count) % result.count]
+            let current = result[index]
+            let next = result[(index + 1) % result.count]
+            let area = abs((current.x - previous.x) * (next.y - previous.y) - (current.y - previous.y) * (next.x - previous.x))
+            if area < areaThreshold {
+                result.remove(at: index)
+            } else {
+                index += 1
+            }
+        }
+        return result
     }
 
     private func updateVertex(shapeID: UUID, vertexIndex: Int, to point: CGPoint) {
