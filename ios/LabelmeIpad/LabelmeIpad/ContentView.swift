@@ -1923,11 +1923,30 @@ private struct InspectorPanel: View {
 
     private var shapeList: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Shape List")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
+            HStack(spacing: 6) {
+                Text("Shape List")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                SidebarToggleButton(
+                    title: "Shapes",
+                    icon: .image,
+                    isOn: areAllShapesVisible,
+                    action: toggleAllShapesFromSidebar
+                )
+
+                SidebarToggleButton(
+                    title: "Labels",
+                    icon: .labels,
+                    isOn: store.showsLabels
+                ) {
+                    store.showsLabels.toggle()
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
 
             if let shapes = store.annotation?.shapes, !shapes.isEmpty {
                 ScrollView {
@@ -2009,6 +2028,15 @@ private struct InspectorPanel: View {
                     .padding(.vertical, 12)
             }
         }
+    }
+
+    private var areAllShapesVisible: Bool {
+        guard let shapes = store.annotation?.shapes, !shapes.isEmpty else { return true }
+        return shapes.allSatisfy(\.isVisible)
+    }
+
+    private func toggleAllShapesFromSidebar() {
+        store.toggleAllShapesVisibility(areAllShapesVisible ? false : true)
     }
 
     private var metadata: some View {
@@ -2276,6 +2304,33 @@ private struct ShapeRow: View {
             }
         }
         .onTapGesture(perform: action)
+    }
+}
+
+private struct SidebarToggleButton: View {
+    let title: String
+    let icon: LabelmeIcon
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                LabelmeIconView(icon: icon, size: 12)
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 6)
+            .frame(height: 24)
+            .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isOn ? Color.accentColor.opacity(0.14) : Color(.tertiarySystemFill))
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }
 
