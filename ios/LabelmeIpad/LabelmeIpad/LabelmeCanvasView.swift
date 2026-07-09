@@ -22,6 +22,7 @@ struct LabelmeCanvasView: View {
     @Binding var canUndoLastPoint: Bool
     var onEditingBegan: () -> Void
     var onEditingEnded: () -> Void
+    var onShapeCreated: (UUID) -> Void = { _ in }
     var onChange: () -> Void
 
     @State private var zoom: CGFloat = 1
@@ -649,6 +650,7 @@ struct LabelmeCanvasView: View {
         selectedShapeID = shape.id
         selectedVertex = nil
         selectedShapeIDs = [shape.id]
+        onShapeCreated(shape.id)
         onChange()
     }
 

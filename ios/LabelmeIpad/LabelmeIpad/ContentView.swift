@@ -7,6 +7,7 @@ struct ContentView: View {
     @AppStorage("multiSelectModifier") private var multiSelectModifierRaw = ShortcutModifier.shift.rawValue
     @AppStorage("addPointModifier") private var addPointModifierRaw = ShortcutModifier.option.rawValue
     @AppStorage("pencilOnlyEditing") private var pencilOnlyEditing = true
+    @AppStorage("promptForPolygonLabelAfterCreation") private var promptForPolygonLabelAfterCreation = true
     @AppStorage("keyboardShortcutOverrides") private var keyboardShortcutOverrides = ShortcutRegistry.defaultJSON()
     @State private var serverDraft = ""
     @State private var cloudflareAccessClientIdDraft = ""
@@ -20,6 +21,8 @@ struct ContentView: View {
     @State private var imageUploadPickerPresented = false
     @State private var canUndoLastPoint = false
     @State private var labelFocusRequest = 0
+    @State private var creationLabelPickerShapeID: UUID?
+    @State private var creationLabelPickerDraft = ""
     @State private var isMultiSelectModifierPressed = false
     @State private var isAddPointModifierPressed = false
 
@@ -94,6 +97,7 @@ struct ContentView: View {
                 multiSelectModifierRaw: $multiSelectModifierRaw,
                 addPointModifierRaw: $addPointModifierRaw,
                 pencilOnlyEditing: $pencilOnlyEditing,
+                promptForPolygonLabelAfterCreation: $promptForPolygonLabelAfterCreation,
                 keyboardShortcutOverrides: $keyboardShortcutOverrides,
                 onTest: testServer,
                 onConnect: openServer,
@@ -426,8 +430,38 @@ struct ContentView: View {
                 canUndoLastPoint: $canUndoLastPoint,
                 onEditingBegan: store.beginUndoGrouping,
                 onEditingEnded: store.endUndoGrouping,
+                onShapeCreated: handleShapeCreated,
                 onChange: store.markDirty
             )
+            .popover(
+                isPresented: Binding(
+                    get: { creationLabelPickerShapeID != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            creationLabelPickerShapeID = nil
+                        }
+                    }
+                ),
+                arrowEdge: .top
+            ) {
+                if let shape = creationLabelPickerShape {
+                    ShapeLabelPickerPopover(
+                        title: "ラベルを選択",
+                        shape: shape,
+                        draftLabel: $creationLabelPickerDraft,
+                        labels: store.recentLabels,
+                        onChoose: { label in
+                            applyCreationLabel(label)
+                        },
+                        onApply: {
+                            applyCreationLabel(creationLabelPickerDraft)
+                        },
+                        onCancel: {
+                            creationLabelPickerShapeID = nil
+                        }
+                    )
+                }
+            }
         } else {
             VStack(spacing: 10) {
                 LabelmeIconView(icon: .image, size: 42)
@@ -441,6 +475,26 @@ struct ContentView: View {
             .background(Color(red: 0.17, green: 0.18, blue: 0.19))
             .foregroundStyle(.white)
         }
+    }
+
+    private var creationLabelPickerShape: LabelmeShape? {
+        guard let id = creationLabelPickerShapeID else { return nil }
+        return store.annotation?.shapes.first { $0.id == id }
+    }
+
+    private func handleShapeCreated(_ id: UUID) {
+        guard promptForPolygonLabelAfterCreation,
+              let shape = store.annotation?.shapes.first(where: { $0.id == id }),
+              shape.shapeType == .polygon
+        else { return }
+        creationLabelPickerShapeID = id
+        creationLabelPickerDraft = shape.label
+    }
+
+    private func applyCreationLabel(_ label: String) {
+        guard let id = creationLabelPickerShapeID else { return }
+        store.updateShapeLabel(id: id, label: label)
+        creationLabelPickerShapeID = nil
     }
 
     private var annotationBinding: Binding<LabelmeAnnotation> {
@@ -612,6 +666,7 @@ private struct AppSettingsView: View {
     @Binding var multiSelectModifierRaw: String
     @Binding var addPointModifierRaw: String
     @Binding var pencilOnlyEditing: Bool
+    @Binding var promptForPolygonLabelAfterCreation: Bool
     @Binding var keyboardShortcutOverrides: String
     @State private var recordingAction: ShortcutAction?
     @State private var selectedCategory = SettingsCategory.general
@@ -802,6 +857,7 @@ private struct AppSettingsView: View {
                 )
                 .disabled(!store.fillsShapes)
                 Toggle("Apple Pencil のみで編集", isOn: $pencilOnlyEditing)
+                Toggle("ポリゴン完成時にラベルを選択", isOn: $promptForPolygonLabelAfterCreation)
             }
         }
     }
@@ -902,6 +958,7 @@ private struct AppSettingsView: View {
                 )
                 .disabled(!store.fillsShapes)
                 Toggle("Apple Pencil のみでポリゴン作成・編集", isOn: $pencilOnlyEditing)
+                Toggle("ポリゴン完成時にラベルを選択", isOn: $promptForPolygonLabelAfterCreation)
                 Button {
                     store.toggleAllShapesVisibility(true)
                 } label: {
@@ -2152,6 +2209,7 @@ private extension CanvasTool {
 }
 
 private struct ShapeLabelPickerPopover: View {
+    var title = "ラベルを変更"
     let shape: LabelmeShape
     @Binding var draftLabel: String
     let labels: [String]
@@ -2181,7 +2239,7 @@ private struct ShapeLabelPickerPopover: View {
                     .frame(width: 5, height: 24)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("ラベルを変更")
+                    Text(title)
                         .font(.callout.weight(.semibold))
                     Text("\(shape.shapeType.title) - \(shape.pointSummary)")
                         .font(.caption2)
