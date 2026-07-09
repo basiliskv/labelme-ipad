@@ -1980,26 +1980,26 @@ private struct InspectorPanel: View {
 
     private var shapeList: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 7) {
                 Text("Shape List")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                Spacer()
+                HStack(spacing: 8) {
+                    SidebarToggleButton(
+                        title: "Shapes",
+                        icon: .image,
+                        isOn: areAllShapesVisible,
+                        action: toggleAllShapesFromSidebar
+                    )
 
-                SidebarToggleButton(
-                    title: "Shapes",
-                    icon: .image,
-                    isOn: areAllShapesVisible,
-                    action: toggleAllShapesFromSidebar
-                )
-
-                SidebarToggleButton(
-                    title: "Labels",
-                    icon: .labels,
-                    isOn: store.showsLabels
-                ) {
-                    store.showsLabels.toggle()
+                    SidebarToggleButton(
+                        title: "Labels",
+                        icon: .labels,
+                        isOn: store.showsLabels
+                    ) {
+                        store.showsLabels.toggle()
+                    }
                 }
             }
             .padding(.horizontal, 8)
@@ -2373,17 +2373,18 @@ private struct SidebarToggleButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 3) {
-                LabelmeIconView(icon: icon, size: 12)
+            HStack(spacing: 6) {
+                LabelmeIconView(icon: icon, size: 16)
                 Text(title)
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .lineLimit(1)
             }
-            .padding(.horizontal, 6)
-            .frame(height: 24)
+            .padding(.horizontal, 9)
+            .frame(maxWidth: .infinity)
+            .frame(height: 34)
             .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(isOn ? Color.accentColor.opacity(0.14) : Color(.tertiarySystemFill))
             )
         }
