@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import UIKit
 
 struct LabelmeAPI {
@@ -115,7 +116,7 @@ struct LabelmeAPI {
         applyAccessHeaders(to: &request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(data: data, response: response)
-        guard let image = UIImage(data: data)?.labelmeNormalizedForDisplay() else {
+        guard let image = UIImage.labelmeImage(data: data) else {
             throw URLError(.cannotDecodeContentData)
         }
         return image
@@ -204,21 +205,37 @@ struct LabelmeAPI {
 }
 
 extension UIImage {
-    func labelmeNormalizedForDisplay() -> UIImage {
-        guard imageOrientation != .up else { return self }
-
-        let targetSize: CGSize
-        switch imageOrientation {
-        case .left, .leftMirrored, .right, .rightMirrored:
-            targetSize = CGSize(width: size.height, height: size.width)
-        default:
-            targetSize = size
+    static func labelmeImage(data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return UIImage(data: data)
         }
+        return labelmeImage(from: source) ?? UIImage(data: data)
+    }
 
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        return renderer.image { _ in
-            draw(in: CGRect(origin: .zero, size: targetSize))
+    static func labelmeImage(contentsOfFile path: String) -> UIImage? {
+        let url = URL(fileURLWithPath: path)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            return UIImage(contentsOfFile: path)
         }
+        return labelmeImage(from: source) ?? UIImage(contentsOfFile: path)
+    }
+
+    private static func labelmeImage(from source: CGImageSource) -> UIImage? {
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
+        let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
+        let maxPixelSize = max(width, height, 1)
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ] as CFDictionary
+
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage, scale: 1, orientation: .up)
     }
 
     var labelmeDisplayPixelSize: (width: Int, height: Int) {

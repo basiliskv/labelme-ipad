@@ -804,7 +804,7 @@ private final class LocalLabelmeDataset: LocalDatasetProviding {
 
     func loadImage(for item: DatasetImageItem) throws -> UIImage {
         let record = try record(for: item)
-        guard let image = UIImage(contentsOfFile: record.imageURL.path)?.labelmeNormalizedForDisplay() else {
+        guard let image = UIImage.labelmeImage(contentsOfFile: record.imageURL.path) else {
             throw URLError(.cannotDecodeContentData)
         }
         return image
@@ -1109,7 +1109,7 @@ private final class ZipLabelmeDataset: LocalDatasetProviding {
     func loadImage(for item: DatasetImageItem) throws -> UIImage {
         let record = try record(for: item)
         let data = try ZipArchiveExtractor.data(for: record.imageEntry, in: zipURL)
-        guard let image = UIImage(data: data)?.labelmeNormalizedForDisplay() else {
+        guard let image = UIImage.labelmeImage(data: data) else {
             throw URLError(.cannotDecodeContentData)
         }
         return image
