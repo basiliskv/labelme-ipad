@@ -14,6 +14,7 @@ import json
 import mimetypes
 import os
 import posixpath
+import re
 import socket
 import struct
 import tempfile
@@ -37,6 +38,13 @@ class ImageRecord:
     path: Path
     relative_path: str
     label_path: Path
+
+
+@dataclass(frozen=True)
+class DatasetEntry:
+    id: str
+    name: str
+    dataset: "Dataset"
 
 
 class Dataset:
@@ -174,8 +182,142 @@ class Dataset:
         }
 
 
+class DatasetCollection:
+    def __init__(self, datasets: list[DatasetEntry]) -> None:
+        if not datasets:
+            raise ValueError("at least one dataset is required")
+        self.datasets = datasets
+
+    @classmethod
+    def from_roots(cls, roots: list[str], images_dir: str, labels_dir: str) -> "DatasetCollection":
+        entries: list[DatasetEntry] = []
+        used_ids: set[str] = set()
+        for index, root in enumerate(roots):
+            dataset = Dataset(Path(root), images_dir, labels_dir)
+            name = dataset.root.name or f"dataset-{index + 1}"
+            dataset_id = unique_dataset_id(slugify(name) or f"dataset-{index + 1}", used_ids)
+            entries.append(DatasetEntry(id=dataset_id, name=name, dataset=dataset))
+        return cls(entries)
+
+    @property
+    def is_single_dataset(self) -> bool:
+        return len(self.datasets) == 1
+
+    def refresh(self) -> None:
+        for entry in self.datasets:
+            entry.dataset.refresh()
+
+    def record(self, external_id: str) -> tuple[DatasetEntry, ImageRecord]:
+        if self.is_single_dataset:
+            entry = self.datasets[0]
+            return entry, entry.dataset.record(external_id)
+
+        dataset_id, separator, record_id = external_id.partition("~")
+        if not separator or not dataset_id or not record_id:
+            raise KeyError(f"unknown image id: {external_id}")
+        for entry in self.datasets:
+            if entry.id == dataset_id:
+                return entry, entry.dataset.record(record_id)
+        raise KeyError(f"unknown dataset id: {dataset_id}")
+
+    def image_items(self, base_url: str, offset: int, limit: int, query: str) -> dict[str, Any]:
+        needle = query.strip().lower()
+        items: list[dict[str, Any]] = []
+        for entry in self.datasets:
+            for record in entry.dataset.records:
+                if needle and not self._matches(record, needle):
+                    continue
+                items.append(self._item_payload(entry, record, base_url))
+
+        items.sort(key=lambda item: (str(item.get("datasetName", "")).lower(), str(item.get("relativePath", "")).lower()))
+        page = items[offset : offset + limit]
+        primary = self.datasets[0].dataset
+        return {
+            "datasetRoot": self.dataset_root_summary(),
+            "imagesRoot": str(primary.images_root) if self.is_single_dataset else "",
+            "labelsRoot": str(primary.labels_root) if self.is_single_dataset else "",
+            "offset": offset,
+            "limit": limit,
+            "total": len(items),
+            "items": page,
+            "datasets": [self._dataset_payload(entry) for entry in self.datasets],
+        }
+
+    def annotation_payload(self, entry: DatasetEntry, record: ImageRecord, base_url: str) -> dict[str, Any]:
+        payload = entry.dataset.annotation_payload(record, base_url)
+        payload["imageUrl"] = f"{base_url}/api/image/{self.external_id(entry, record)}"
+        return payload
+
+    def save_annotation(self, entry: DatasetEntry, record: ImageRecord, payload: dict[str, Any]) -> dict[str, Any]:
+        return entry.dataset.save_annotation(record, payload)
+
+    def health(self) -> dict[str, Any]:
+        image_count = sum(len(entry.dataset.records) for entry in self.datasets)
+        annotated_count = sum(
+            1
+            for entry in self.datasets
+            for record in entry.dataset.records
+            if record.label_path.exists()
+        )
+        primary = self.datasets[0].dataset
+        return {
+            "ok": True,
+            "datasetRoot": self.dataset_root_summary(),
+            "imagesRoot": str(primary.images_root) if self.is_single_dataset else "",
+            "labelsRoot": str(primary.labels_root) if self.is_single_dataset else "",
+            "imageCount": image_count,
+            "annotatedCount": annotated_count,
+            "hostHint": lan_ip_hint(),
+            "datasets": [self._dataset_payload(entry) for entry in self.datasets],
+        }
+
+    def dataset_root_summary(self) -> str:
+        if self.is_single_dataset:
+            return str(self.datasets[0].dataset.root)
+        return f"{len(self.datasets)} datasets: " + ", ".join(entry.name for entry in self.datasets)
+
+    def external_id(self, entry: DatasetEntry, record: ImageRecord) -> str:
+        if self.is_single_dataset:
+            return record.id
+        return f"{entry.id}~{record.id}"
+
+    def _matches(self, record: ImageRecord, needle: str) -> bool:
+        return (
+            needle in record.relative_path.lower()
+            or needle in record.path.stem.lower()
+            or needle in " ".join(label_names(record.label_path)).lower()
+        )
+
+    def _item_payload(self, entry: DatasetEntry, record: ImageRecord, base_url: str) -> dict[str, Any]:
+        payload = entry.dataset._item_payload(record, base_url)
+        external_id = self.external_id(entry, record)
+        payload.update(
+            {
+                "id": external_id,
+                "datasetId": entry.id,
+                "datasetName": entry.name,
+                "datasetRoot": str(entry.dataset.root),
+                "imageUrl": f"{base_url}/api/image/{external_id}",
+                "annotationUrl": f"{base_url}/api/annotation/{external_id}",
+            }
+        )
+        return payload
+
+    def _dataset_payload(self, entry: DatasetEntry) -> dict[str, Any]:
+        annotated = sum(1 for record in entry.dataset.records if record.label_path.exists())
+        return {
+            "id": entry.id,
+            "name": entry.name,
+            "datasetRoot": str(entry.dataset.root),
+            "imagesRoot": str(entry.dataset.images_root),
+            "labelsRoot": str(entry.dataset.labels_root),
+            "imageCount": len(entry.dataset.records),
+            "annotatedCount": annotated,
+        }
+
+
 class Handler(BaseHTTPRequestHandler):
-    dataset: Dataset
+    dataset: DatasetCollection
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -201,12 +343,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(self.dataset.image_items(self.base_url(), offset, limit, search))
                 return
             if path.startswith("/api/image/"):
-                record = self.dataset.record(unquote(path.removeprefix("/api/image/")))
+                _, record = self.dataset.record(unquote(path.removeprefix("/api/image/")))
                 self._send_file(record.path)
                 return
             if path.startswith("/api/annotation/"):
-                record = self.dataset.record(unquote(path.removeprefix("/api/annotation/")))
-                self._send_json(self.dataset.annotation_payload(record, self.base_url()))
+                entry, record = self.dataset.record(unquote(path.removeprefix("/api/annotation/")))
+                self._send_json(self.dataset.annotation_payload(entry, record, self.base_url()))
                 return
             self._send_error(HTTPStatus.NOT_FOUND, "not found")
         except Exception as exc:
@@ -218,14 +360,14 @@ class Handler(BaseHTTPRequestHandler):
             if not parsed.path.startswith("/api/annotation/"):
                 self._send_error(HTTPStatus.NOT_FOUND, "not found")
                 return
-            record = self.dataset.record(unquote(parsed.path.removeprefix("/api/annotation/")))
+            entry, record = self.dataset.record(unquote(parsed.path.removeprefix("/api/annotation/")))
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length)
             payload = json.loads(body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("request body must be a JSON object")
-            saved = self.dataset.save_annotation(record, payload)
-            saved["imageUrl"] = f"{self.base_url()}/api/image/{record.id}"
+            saved = self.dataset.save_annotation(entry, record, payload)
+            saved["imageUrl"] = f"{self.base_url()}/api/image/{self.dataset.external_id(entry, record)}"
             self._send_json(saved)
         except Exception as exc:
             self._send_exception(exc)
@@ -293,6 +435,21 @@ def encode_id(relative_path: str) -> str:
 def decode_id(record_id: str) -> str:
     padding = "=" * ((4 - len(record_id) % 4) % 4)
     return base64.urlsafe_b64decode((record_id + padding).encode("ascii")).decode("utf-8")
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-_.")
+    return slug.lower()
+
+
+def unique_dataset_id(base: str, used: set[str]) -> str:
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
 
 
 def label_image_path(relative_path: str) -> str:
@@ -450,6 +607,16 @@ def lan_ip_hint() -> str:
 
 def status_page(health: dict[str, Any]) -> str:
     host_hint = health.get("hostHint", "127.0.0.1")
+    datasets = health.get("datasets") if isinstance(health.get("datasets"), list) else []
+    if datasets:
+        dataset_items = "\n".join(
+            f"<li><code>{dataset.get('name')}</code>: <code>{dataset.get('datasetRoot')}</code> "
+            f"({dataset.get('imageCount')} images / {dataset.get('annotatedCount')} annotated)</li>"
+            for dataset in datasets
+            if isinstance(dataset, dict)
+        )
+    else:
+        dataset_items = f"<li><code>{health.get('datasetRoot')}</code></li>"
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -465,7 +632,7 @@ def status_page(health: dict[str, Any]) -> str:
   <h1>Labelme iPad Server</h1>
   <p>Server is running.</p>
   <ul>
-    <li>Dataset: <code>{health.get("datasetRoot")}</code></li>
+    <li>Datasets: <ul>{dataset_items}</ul></li>
     <li>Images: <code>{health.get("imageCount")}</code></li>
     <li>Annotated: <code>{health.get("annotatedCount")}</code></li>
   </ul>
@@ -475,7 +642,7 @@ def status_page(health: dict[str, Any]) -> str:
 </html>"""
 
 
-def make_handler(dataset: Dataset) -> type[Handler]:
+def make_handler(dataset: DatasetCollection) -> type[Handler]:
     class BoundHandler(Handler):
         pass
 
@@ -485,19 +652,27 @@ def make_handler(dataset: Dataset) -> type[Handler]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve a Labelme dataset for the iPad app.")
-    parser.add_argument("--dataset", default=DEFAULT_DATASET, help="Dataset root. Defaults to %(default)s")
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        dest="datasets",
+        help=f"Dataset root. May be passed multiple times. Defaults to {DEFAULT_DATASET}",
+    )
     parser.add_argument("--images-dir", default="images", help="Images directory under dataset root.")
     parser.add_argument("--labels-dir", default="labels", help="Labels directory under dataset root.")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host.")
     parser.add_argument("--port", type=int, default=8765, help="Bind port.")
     args = parser.parse_args()
 
-    dataset = Dataset(Path(args.dataset), args.images_dir, args.labels_dir)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(dataset))
+    dataset_roots = args.datasets or [DEFAULT_DATASET]
+    datasets = DatasetCollection.from_roots(dataset_roots, args.images_dir, args.labels_dir)
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(datasets))
     hint = lan_ip_hint()
-    print(f"Dataset: {dataset.root}")
-    print(f"Images:  {dataset.images_root} ({len(dataset.records)} files)")
-    print(f"Labels:  {dataset.labels_root}")
+    print("Datasets:")
+    for entry in datasets.datasets:
+        print(f"  [{entry.id}] {entry.dataset.root}")
+        print(f"      Images: {entry.dataset.images_root} ({len(entry.dataset.records)} files)")
+        print(f"      Labels: {entry.dataset.labels_root}")
     print(f"Open on this Mac: http://127.0.0.1:{args.port}")
     print(f"Use on iPad:      http://{hint}:{args.port}")
     try:

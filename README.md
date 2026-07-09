@@ -24,6 +24,14 @@ chmod +x scripts/start_server.sh
 ./scripts/start_server.sh /path/to/dataset
 ```
 
+複数のデータセットを同時に出す場合は、パスを複数渡します。
+
+```sh
+./scripts/start_server.sh /path/to/dataset-a /path/to/dataset-b
+```
+
+複数指定時はアプリの File List に全データセットの画像がまとめて表示されます。画像IDはサーバー側でデータセットごとの prefix を付けるため、同名画像があっても保存先の `labels/` は元のデータセットごとに分かれます。
+
 起動すると、iPad から入力する URL が表示されます。
 
 ```text
