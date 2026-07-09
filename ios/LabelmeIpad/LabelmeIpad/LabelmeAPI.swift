@@ -115,7 +115,7 @@ struct LabelmeAPI {
         applyAccessHeaders(to: &request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(data: data, response: response)
-        guard let image = UIImage(data: data) else {
+        guard let image = UIImage(data: data)?.labelmeNormalizedForDisplay() else {
             throw URLError(.cannotDecodeContentData)
         }
         return image
@@ -200,6 +200,35 @@ struct LabelmeAPI {
             }
             throw LabelmeAPIError.server("HTTP \(http.statusCode)")
         }
+    }
+}
+
+extension UIImage {
+    func labelmeNormalizedForDisplay() -> UIImage {
+        guard imageOrientation != .up else { return self }
+
+        let targetSize: CGSize
+        switch imageOrientation {
+        case .left, .leftMirrored, .right, .rightMirrored:
+            targetSize = CGSize(width: size.height, height: size.width)
+        default:
+            targetSize = size
+        }
+
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        return renderer.image { _ in
+            draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+    }
+
+    var labelmeDisplayPixelSize: (width: Int, height: Int) {
+        if let cgImage {
+            return (cgImage.width, cgImage.height)
+        }
+        return (
+            max(Int((size.width * scale).rounded()), 1),
+            max(Int((size.height * scale).rounded()), 1)
+        )
     }
 }
 

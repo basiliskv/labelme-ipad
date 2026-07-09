@@ -223,6 +223,7 @@ struct ContentView: View {
     private func preferredCreationAction(in actions: [ShortcutAction]) -> ShortcutAction? {
         let creationPriority: [ShortcutAction] = [
             .createPolygon,
+            .createFreehand,
             .createRectangle,
             .createCircle,
             .createLine,
@@ -266,6 +267,8 @@ struct ContentView: View {
             canvasCommand = .fitWidth
         case .createPolygon:
             store.tool = .polygon
+        case .createFreehand:
+            store.tool = .freehand
         case .createRectangle:
             store.tool = .rectangle
         case .createCircle:
@@ -2110,7 +2113,7 @@ private extension CanvasTool {
         switch self {
         case .edit: .editShape
         case .polygon: .createPolygon
-        case .freehand: .createPolygon
+        case .freehand: .createFreehand
         case .rectangle: .createRectangle
         case .circle: .createCircle
         case .line: .createLine

@@ -4,6 +4,22 @@ import SwiftUI
 import UIKit
 import zlib
 
+private func labelmeImageSize(from properties: [CFString: Any]) -> (width: Int, height: Int) {
+    guard let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+          let height = properties[kCGImagePropertyPixelHeight] as? NSNumber
+    else {
+        return (0, 0)
+    }
+
+    let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+    switch orientation {
+    case 5, 6, 7, 8:
+        return (height.intValue, width.intValue)
+    default:
+        return (width.intValue, height.intValue)
+    }
+}
+
 enum ShortcutModifier: String, CaseIterable, Identifiable {
     case shift
     case control
@@ -85,6 +101,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case fitWindow
     case fitWidth
     case createPolygon
+    case createFreehand
     case createRectangle
     case createOrientedRectangle
     case createCircle
@@ -148,6 +165,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .fitWindow: "ウィンドウに合わせる"
         case .fitWidth: "幅に合わせる"
         case .createPolygon: "ポリゴン作成"
+        case .createFreehand: "フリーハンド作成"
         case .createRectangle: "矩形作成"
         case .createOrientedRectangle: "回転矩形作成"
         case .createCircle: "円作成"
@@ -196,7 +214,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
             "ファイル"
         case .zoomIn, .zoomOut, .zoomToOriginal, .fitWindow, .fitWidth, .showAllShapes, .hideAllShapes, .toggleAllShapes, .showSelectedShapes, .hideSelectedShapes, .toggleSelectedShapes, .toggleLabels, .toggleFillPolygons, .toggleFileList, .toggleLabelPanel, .showBrightnessContrast, .resetBrightnessContrast, .showSettings:
             "表示"
-        case .createPolygon, .createRectangle, .createOrientedRectangle, .createCircle, .createLine, .createPoint, .createLinestrip, .editShape, .selectAllShapes, .clearShapeSelection, .deleteShape, .duplicateShape, .copyShape, .pasteShape, .connectPolygons, .subtractOverlap, .changeSelectedToPolygon, .changeSelectedToRectangle, .changeSelectedToCircle, .changeSelectedToLine, .changeSelectedToPoint, .changeSelectedToLinestrip, .undo, .undoLastPoint, .editLabel, .toggleKeepPrevMode, .removeSelectedPoint, .redo:
+        case .createPolygon, .createFreehand, .createRectangle, .createOrientedRectangle, .createCircle, .createLine, .createPoint, .createLinestrip, .editShape, .selectAllShapes, .clearShapeSelection, .deleteShape, .duplicateShape, .copyShape, .pasteShape, .connectPolygons, .subtractOverlap, .changeSelectedToPolygon, .changeSelectedToRectangle, .changeSelectedToCircle, .changeSelectedToLine, .changeSelectedToPoint, .changeSelectedToLinestrip, .undo, .undoLastPoint, .editLabel, .toggleKeepPrevMode, .removeSelectedPoint, .redo:
             "編集"
         }
     }
@@ -222,6 +240,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .fitWindow: "画像全体がキャンバス内に収まるように表示します。"
         case .fitWidth: "画像の幅がキャンバス幅に合うように表示します。"
         case .createPolygon: "ポリゴン作成モードに切り替えます。"
+        case .createFreehand: "輪郭をなぞって、離した時にポリゴン化するフリーハンド作成モードに切り替えます。"
         case .createRectangle: "矩形作成モードに切り替えます。"
         case .createOrientedRectangle: "回転矩形作成用として予約しています。"
         case .createCircle: "円作成モードに切り替えます。"
@@ -285,6 +304,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .fitWindow: "Ctrl+F"
         case .fitWidth: "Ctrl+Shift+F"
         case .createPolygon: "Ctrl+N"
+        case .createFreehand: ""
         case .createRectangle: "Ctrl+R"
         case .createOrientedRectangle: ""
         case .createCircle: ""
@@ -329,7 +349,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
 
     var isOriginalLabelmeShortcut: Bool {
         switch self {
-        case .openZip, .openDocumentsDataset, .showSettings, .redo, .selectAllShapes, .clearShapeSelection, .connectPolygons, .subtractOverlap, .changeSelectedToPolygon, .changeSelectedToRectangle, .changeSelectedToCircle, .changeSelectedToLine, .changeSelectedToPoint, .changeSelectedToLinestrip, .showSelectedShapes, .hideSelectedShapes, .toggleSelectedShapes, .toggleLabels, .toggleFillPolygons, .toggleFileList, .toggleLabelPanel, .showBrightnessContrast, .resetBrightnessContrast:
+        case .openZip, .openDocumentsDataset, .showSettings, .redo, .createFreehand, .selectAllShapes, .clearShapeSelection, .connectPolygons, .subtractOverlap, .changeSelectedToPolygon, .changeSelectedToRectangle, .changeSelectedToCircle, .changeSelectedToLine, .changeSelectedToPoint, .changeSelectedToLinestrip, .showSelectedShapes, .hideSelectedShapes, .toggleSelectedShapes, .toggleLabels, .toggleFillPolygons, .toggleFileList, .toggleLabelPanel, .showBrightnessContrast, .resetBrightnessContrast:
             false
         default:
             true
@@ -784,7 +804,7 @@ private final class LocalLabelmeDataset: LocalDatasetProviding {
 
     func loadImage(for item: DatasetImageItem) throws -> UIImage {
         let record = try record(for: item)
-        guard let image = UIImage(contentsOfFile: record.imageURL.path) else {
+        guard let image = UIImage(contentsOfFile: record.imageURL.path)?.labelmeNormalizedForDisplay() else {
             throw URLError(.cannotDecodeContentData)
         }
         return image
@@ -893,13 +913,11 @@ private final class LocalLabelmeDataset: LocalDatasetProviding {
 
     private func imageSize(_ url: URL) -> (width: Int, height: Int) {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
-              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         else {
             return (0, 0)
         }
-        return (width.intValue, height.intValue)
+        return labelmeImageSize(from: properties)
     }
 
     private func modificationTime(_ url: URL) -> Double {
@@ -1091,7 +1109,7 @@ private final class ZipLabelmeDataset: LocalDatasetProviding {
     func loadImage(for item: DatasetImageItem) throws -> UIImage {
         let record = try record(for: item)
         let data = try ZipArchiveExtractor.data(for: record.imageEntry, in: zipURL)
-        guard let image = UIImage(data: data) else {
+        guard let image = UIImage(data: data)?.labelmeNormalizedForDisplay() else {
             throw URLError(.cannotDecodeContentData)
         }
         return image
@@ -1150,13 +1168,11 @@ private final class ZipLabelmeDataset: LocalDatasetProviding {
     private func imageSize(for entry: ZipArchiveEntry) -> (width: Int, height: Int) {
         guard let data = try? ZipArchiveExtractor.data(for: entry, in: zipURL),
               let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
-              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         else {
             return (0, 0)
         }
-        return (width.intValue, height.intValue)
+        return labelmeImageSize(from: properties)
     }
 
     private static func imageRecords(in index: ZipArchiveIndex, labelsURL: URL) throws -> [ZipImageRecord] {
@@ -2193,6 +2209,9 @@ final class DatasetStore: ObservableObject {
                 loaded = try await (loadedAnnotation, loadedImage)
             }
             var (annotation, image) = loaded
+            let imageSize = image.labelmeDisplayPixelSize
+            annotation.imageWidth = imageSize.width
+            annotation.imageHeight = imageSize.height
             let savedAnnotation = annotation
             if keepsPreviousShapes, annotation.shapes.isEmpty, !previousShapes.isEmpty {
                 annotation.shapes = previousShapes.map { shape in
