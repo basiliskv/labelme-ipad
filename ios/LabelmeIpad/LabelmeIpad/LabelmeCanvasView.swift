@@ -73,8 +73,11 @@ struct LabelmeCanvasView: View {
                     .padding(12)
             }
             .background(Color(red: 0.17, green: 0.18, blue: 0.19))
-            .onChange(of: tool) {
+            .onChange(of: tool) { _, newTool in
                 cancelDraft()
+                if newTool.isCreationTool {
+                    clearActiveShapeSelection()
+                }
             }
             .onChange(of: draftPoints.count) { _, newValue in
                 canUndoLastPoint = newValue > 0
@@ -441,11 +444,13 @@ struct LabelmeCanvasView: View {
             lastDragScreenPoint = value.location
         case .rectangle, .circle, .line:
             if dragStart == nil {
+                clearActiveShapeSelection()
                 dragStart = imagePoint
             }
             dragEnd = imagePoint
         case .freehand:
             if !isFreehandDrawing {
+                clearActiveShapeSelection()
                 isFreehandDrawing = true
                 onEditingBegan()
             }
@@ -476,12 +481,18 @@ struct LabelmeCanvasView: View {
             if shouldClosePolygon(with: imagePoint, transform: transform) {
                 finishDraft()
             } else {
+                if draftPoints.isEmpty {
+                    clearActiveShapeSelection()
+                }
                 draftPoints.append(clamped(imagePoint))
             }
         case .freehand:
             appendFreehandPoint(imagePoint, transform: transform)
             finishFreehandDraft()
         case .linestrip:
+            if draftPoints.isEmpty {
+                clearActiveShapeSelection()
+            }
             draftPoints.append(clamped(imagePoint))
         case .rectangle:
             if let start = dragStart {
@@ -618,6 +629,12 @@ struct LabelmeCanvasView: View {
             isFreehandDrawing = false
             onEditingEnded()
         }
+    }
+
+    private func clearActiveShapeSelection() {
+        selectedShapeID = nil
+        selectedShapeIDs.removeAll()
+        selectedVertex = nil
     }
 
     private func commit(points: [CGPoint], shapeType: LabelmeShapeType) {

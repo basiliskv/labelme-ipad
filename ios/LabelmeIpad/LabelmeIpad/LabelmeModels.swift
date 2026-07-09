@@ -480,6 +480,10 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         case .linestrip: .linestrip
         }
     }
+
+    var isCreationTool: Bool {
+        self != .edit
+    }
 }
 
 enum CanvasCommand: String, Identifiable {
