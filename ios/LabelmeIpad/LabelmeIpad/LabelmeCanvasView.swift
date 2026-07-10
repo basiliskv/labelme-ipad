@@ -22,7 +22,7 @@ struct LabelmeCanvasView: View {
     @Binding var canUndoLastPoint: Bool
     var onEditingBegan: () -> Void
     var onEditingEnded: () -> Void
-    var onShapeCreated: (UUID) -> Void = { _ in }
+    var onShapeCreated: (UUID, CGPoint?) -> Void = { _, _ in }
     var onChange: () -> Void
 
     @State private var zoom: CGFloat = 1
@@ -65,7 +65,7 @@ struct LabelmeCanvasView: View {
                     }
 
                 if !draftPoints.isEmpty {
-                    draftBar
+                    draftBar(viewSize: proxy.size)
                         .padding(.bottom, 14)
                 }
 
@@ -141,19 +141,13 @@ struct LabelmeCanvasView: View {
         zoom = max(zoom / 1.2, 0.2)
     }
 
-    private var draftBar: some View {
+    private func draftBar(viewSize: CGSize) -> some View {
         HStack(spacing: 10) {
             Text("\(tool.title): \(draftPoints.count) pts")
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(.white)
             Button {
-                _ = draftPoints.popLast()
-            } label: {
-                LabelmeMenuLabel(title: "Undo last point", icon: .undo)
-            }
-            .disabled(draftPoints.isEmpty)
-            Button {
-                finishDraft()
+                finishDraft(viewSize: viewSize)
             } label: {
                 LabelmeMenuLabel(title: "Finish", icon: .fitWindow)
             }
@@ -298,9 +292,10 @@ struct LabelmeCanvasView: View {
         context.stroke(path, with: .color(.yellow), style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
         for point in points {
             let screen = transform.screenPoint(point)
+            let diameter: CGFloat = tool == .freehand ? 2.5 : 8
             var vertex = Path()
-            vertex.addEllipse(in: CGRect(x: screen.x - 4, y: screen.y - 4, width: 8, height: 8))
-            context.fill(vertex, with: .color(.yellow))
+            vertex.addEllipse(in: CGRect(x: screen.x - diameter / 2, y: screen.y - diameter / 2, width: diameter, height: diameter))
+            context.fill(vertex, with: .color(.yellow.opacity(tool == .freehand ? 0.55 : 1)))
         }
     }
 
@@ -477,10 +472,10 @@ struct LabelmeCanvasView: View {
                 handleEditTap(at: imagePoint, transform: transform)
             }
         case .point:
-            commit(points: [imagePoint], shapeType: .point)
+            commit(points: [imagePoint], shapeType: .point, anchorScreenPoint: transform.screenPoint(imagePoint))
         case .polygon:
             if shouldClosePolygon(with: imagePoint, transform: transform) {
-                finishDraft()
+                finishDraft(transform: transform)
             } else {
                 if draftPoints.isEmpty {
                     clearActiveShapeSelection()
@@ -489,7 +484,7 @@ struct LabelmeCanvasView: View {
             }
         case .freehand:
             appendFreehandPoint(imagePoint, transform: transform)
-            finishFreehandDraft()
+            dragEnd = nil
         case .linestrip:
             if draftPoints.isEmpty {
                 clearActiveShapeSelection()
@@ -497,15 +492,15 @@ struct LabelmeCanvasView: View {
             draftPoints.append(clamped(imagePoint))
         case .rectangle:
             if let start = dragStart {
-                commit(points: [start, imagePoint], shapeType: .rectangle)
+                commit(points: [start, imagePoint], shapeType: .rectangle, anchorScreenPoint: transform.screenPoint(midpoint(start, imagePoint)))
             }
         case .circle:
             if let start = dragStart {
-                commit(points: [start, imagePoint], shapeType: .circle)
+                commit(points: [start, imagePoint], shapeType: .circle, anchorScreenPoint: transform.screenPoint(midpoint(start, imagePoint)))
             }
         case .line:
             if let start = dragStart {
-                commit(points: [start, imagePoint], shapeType: .line)
+                commit(points: [start, imagePoint], shapeType: .line, anchorScreenPoint: transform.screenPoint(midpoint(start, imagePoint)))
             }
         }
 
@@ -605,17 +600,22 @@ struct LabelmeCanvasView: View {
         }
     }
 
-    private func finishDraft() {
+    private func finishDraft(viewSize: CGSize) {
+        let transform = CanvasTransform(viewSize: viewSize, imageSize: imageSize, zoom: zoom, pan: pan)
+        finishDraft(transform: transform)
+    }
+
+    private func finishDraft(transform: CanvasTransform) {
         guard canFinishDraft else { return }
         if tool == .freehand {
-            finishFreehandDraft()
+            finishFreehandDraft(transform: transform)
             if isFreehandDrawing {
                 isFreehandDrawing = false
                 onEditingEnded()
             }
             return
         }
-        commit(points: draftPoints, shapeType: tool.shapeType)
+        commit(points: draftPoints, shapeType: tool.shapeType, anchorScreenPoint: transform.screenPoint(anchorPoint(for: draftPoints)))
         draftPoints.removeAll()
         dragEnd = nil
     }
@@ -638,7 +638,7 @@ struct LabelmeCanvasView: View {
         selectedVertex = nil
     }
 
-    private func commit(points: [CGPoint], shapeType: LabelmeShapeType) {
+    private func commit(points: [CGPoint], shapeType: LabelmeShapeType, anchorScreenPoint: CGPoint? = nil) {
         let cleanPoints = points.map { clamped($0) }
         guard !cleanPoints.isEmpty else { return }
         let shape = LabelmeShape(
@@ -650,7 +650,7 @@ struct LabelmeCanvasView: View {
         selectedShapeID = shape.id
         selectedVertex = nil
         selectedShapeIDs = [shape.id]
-        onShapeCreated(shape.id)
+        onShapeCreated(shape.id, anchorScreenPoint)
         onChange()
     }
 
@@ -664,16 +664,34 @@ struct LabelmeCanvasView: View {
         draftPoints.append(clampedPoint)
     }
 
-    private func finishFreehandDraft() {
+    private func finishFreehandDraft(transform: CanvasTransform) {
         let simplified = simplifyFreehand(points: draftPoints)
         guard simplified.count >= 3 else {
             draftPoints.removeAll()
             dragEnd = nil
             return
         }
-        commit(points: simplified, shapeType: .polygon)
+        commit(points: simplified, shapeType: .polygon, anchorScreenPoint: transform.screenPoint(anchorPoint(for: simplified)))
         draftPoints.removeAll()
         dragEnd = nil
+    }
+
+    private func anchorPoint(for points: [CGPoint]) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        let bounds = points.reduce(CGRect.null) { partial, point in
+            partial.union(CGRect(x: point.x, y: point.y, width: 1, height: 1))
+        }
+        if !bounds.isNull {
+            return CGPoint(x: bounds.midX, y: bounds.minY)
+        }
+        let sum = points.reduce(CGPoint.zero) { partial, point in
+            CGPoint(x: partial.x + point.x, y: partial.y + point.y)
+        }
+        return CGPoint(x: sum.x / CGFloat(points.count), y: sum.y / CGFloat(points.count))
+    }
+
+    private func midpoint(_ first: CGPoint, _ second: CGPoint) -> CGPoint {
+        CGPoint(x: (first.x + second.x) / 2, y: (first.y + second.y) / 2)
     }
 
     private func simplifyFreehand(points: [CGPoint]) -> [CGPoint] {

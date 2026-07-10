@@ -23,6 +23,7 @@ struct ContentView: View {
     @State private var labelFocusRequest = 0
     @State private var creationLabelPickerShapeID: UUID?
     @State private var creationLabelPickerDraft = ""
+    @State private var creationLabelPickerAnchor: CGPoint?
     @State private var isMultiSelectModifierPressed = false
     @State private var isAddPointModifierPressed = false
 
@@ -45,6 +46,7 @@ struct ContentView: View {
                         showsFileList: $showsFileList,
                         showsInspector: $showsInspector,
                         showsBrightnessContrast: $showsBrightnessContrast,
+                        canUndoLastPoint: canUndoLastPoint,
                         onShowSettings: { showsSettings = true },
                         onUploadImages: { imageUploadPickerPresented = true }
                     )
@@ -411,55 +413,32 @@ struct ContentView: View {
     @ViewBuilder
     private var editorSurface: some View {
         if let image = store.image, store.annotation != nil {
-            LabelmeCanvasView(
-                image: image,
-                annotation: annotationBinding,
-                selectedShapeID: $store.selectedShapeID,
-                selectedShapeIDs: $store.selectedShapeIDs,
-                tool: $store.tool,
-                currentLabel: $store.currentLabel,
-                command: $canvasCommand,
-                showsLabels: $store.showsLabels,
-                fillsShapes: $store.fillsShapes,
-                polygonFillOpacity: store.polygonFillOpacity,
-                imageBrightness: store.imageBrightness,
-                imageContrast: store.imageContrast,
-                isMultiSelectModifierPressed: isMultiSelectModifierPressed,
-                isAddPointModifierPressed: isAddPointModifierPressed,
-                isPencilOnlyEditingEnabled: pencilOnlyEditing,
-                canUndoLastPoint: $canUndoLastPoint,
-                onEditingBegan: store.beginUndoGrouping,
-                onEditingEnded: store.endUndoGrouping,
-                onShapeCreated: handleShapeCreated,
-                onChange: store.markDirty
-            )
-            .popover(
-                isPresented: Binding(
-                    get: { creationLabelPickerShapeID != nil },
-                    set: { isPresented in
-                        if !isPresented {
-                            creationLabelPickerShapeID = nil
-                        }
-                    }
-                ),
-                arrowEdge: .top
-            ) {
-                if let shape = creationLabelPickerShape {
-                    ShapeLabelPickerPopover(
-                        title: "ラベルを選択",
-                        shape: shape,
-                        draftLabel: $creationLabelPickerDraft,
-                        labels: store.recentLabels,
-                        onChoose: { label in
-                            applyCreationLabel(label)
-                        },
-                        onApply: {
-                            applyCreationLabel(creationLabelPickerDraft)
-                        },
-                        onCancel: {
-                            creationLabelPickerShapeID = nil
-                        }
+            GeometryReader { proxy in
+                ZStack {
+                    LabelmeCanvasView(
+                        image: image,
+                        annotation: annotationBinding,
+                        selectedShapeID: $store.selectedShapeID,
+                        selectedShapeIDs: $store.selectedShapeIDs,
+                        tool: $store.tool,
+                        currentLabel: $store.currentLabel,
+                        command: $canvasCommand,
+                        showsLabels: $store.showsLabels,
+                        fillsShapes: $store.fillsShapes,
+                        polygonFillOpacity: store.polygonFillOpacity,
+                        imageBrightness: store.imageBrightness,
+                        imageContrast: store.imageContrast,
+                        isMultiSelectModifierPressed: isMultiSelectModifierPressed,
+                        isAddPointModifierPressed: isAddPointModifierPressed,
+                        isPencilOnlyEditingEnabled: pencilOnlyEditing,
+                        canUndoLastPoint: $canUndoLastPoint,
+                        onEditingBegan: store.beginUndoGrouping,
+                        onEditingEnded: store.endUndoGrouping,
+                        onShapeCreated: handleShapeCreated,
+                        onChange: store.markDirty
                     )
+
+                    creationLabelAnchorView(size: proxy.size)
                 }
             }
         } else {
@@ -482,19 +461,68 @@ struct ContentView: View {
         return store.annotation?.shapes.first { $0.id == id }
     }
 
-    private func handleShapeCreated(_ id: UUID) {
+    @ViewBuilder
+    private func creationLabelAnchorView(size: CGSize) -> some View {
+        if let anchor = creationLabelPickerAnchor {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .position(clampedCreationLabelAnchor(anchor, in: size))
+                .popover(
+                    isPresented: Binding(
+                        get: { creationLabelPickerShapeID != nil },
+                        set: { isPresented in
+                            if !isPresented {
+                                creationLabelPickerShapeID = nil
+                                creationLabelPickerAnchor = nil
+                            }
+                        }
+                    ),
+                    arrowEdge: .top
+                ) {
+                    if let shape = creationLabelPickerShape {
+                        ShapeLabelPickerPopover(
+                            title: "ラベルを選択",
+                            shape: shape,
+                            draftLabel: $creationLabelPickerDraft,
+                            labels: store.recentLabels,
+                            onChoose: { label in
+                                applyCreationLabel(label)
+                            },
+                            onApply: {
+                                applyCreationLabel(creationLabelPickerDraft)
+                            },
+                            onCancel: {
+                                creationLabelPickerShapeID = nil
+                                creationLabelPickerAnchor = nil
+                            }
+                        )
+                    }
+                }
+        }
+    }
+
+    private func handleShapeCreated(_ id: UUID, anchor: CGPoint?) {
         guard promptForPolygonLabelAfterCreation,
               let shape = store.annotation?.shapes.first(where: { $0.id == id }),
               shape.shapeType == .polygon
         else { return }
         creationLabelPickerShapeID = id
         creationLabelPickerDraft = shape.label
+        creationLabelPickerAnchor = anchor
     }
 
     private func applyCreationLabel(_ label: String) {
         guard let id = creationLabelPickerShapeID else { return }
         store.updateShapeLabel(id: id, label: label)
         creationLabelPickerShapeID = nil
+        creationLabelPickerAnchor = nil
+    }
+
+    private func clampedCreationLabelAnchor(_ anchor: CGPoint, in size: CGSize) -> CGPoint {
+        CGPoint(
+            x: min(max(anchor.x, 24), max(size.width - 24, 24)),
+            y: min(max(anchor.y, 24), max(size.height - 24, 24))
+        )
     }
 
     private var annotationBinding: Binding<LabelmeAnnotation> {
@@ -1129,6 +1157,7 @@ private struct LabelmeToolbar: View {
     @Binding var showsFileList: Bool
     @Binding var showsInspector: Bool
     @Binding var showsBrightnessContrast: Bool
+    let canUndoLastPoint: Bool
     let onShowSettings: () -> Void
     let onUploadImages: () -> Void
 
@@ -1165,9 +1194,13 @@ private struct LabelmeToolbar: View {
                 toolbarDivider
 
                 ToolButton(title: "Undo", icon: .undo, isSelected: false) {
-                    store.undo()
+                    if canUndoLastPoint {
+                        canvasCommand = .undoLastPoint
+                    } else {
+                        store.undo()
+                    }
                 }
-                .disabled(!store.canUndo)
+                .disabled(!canUndoLastPoint && !store.canUndo)
 
                 ToolButton(title: "Redo", icon: .redo, isSelected: false) {
                     store.redo()
